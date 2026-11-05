@@ -4,6 +4,7 @@ use crate::dilemma::DilemmaInflections;
 use crate::entry_processor::{Entry, EntryMap, Example};
 use crate::frequency::FrequencyRanker;
 use crate::html_escape::escape_html;
+use crate::sqlite_export::{ExportEntry, ExportHeadword, ExportSense};
 use chrono::{Datelike, Local};
 use rayon::prelude::*;
 use regex::Regex;
@@ -518,6 +519,65 @@ impl<'a> HtmlGenerator<'a> {
         }
 
         all_variations
+    }
+
+    /// Structured, HTML-free view of every headword for non-HTML exporters,
+    /// in dictionary sort order. Reflects form-of merging and contested-iform
+    /// ownership, so it must be called after `create_output_files`.
+    pub fn export_headwords(&self) -> Vec<ExportHeadword> {
+        let mut sorted_keys: Vec<&String> = self.entries.keys().collect();
+        sorted_keys.sort_by_cached_key(|k| normalize_for_sorting(k));
+
+        sorted_keys
+            .into_iter()
+            .map(|word| {
+                let entries = self.entries.get(word).unwrap();
+                ExportHeadword {
+                    word: word.clone(),
+                    frequency: self.frequency.frequency(word),
+                    entries: entries.iter().map(|e| self.export_entry(word, e)).collect(),
+                    forms: self.entry_variations(word, entries),
+                }
+            })
+            .collect()
+    }
+
+    fn export_entry(&self, word: &str, entry: &Entry) -> ExportEntry {
+        let mut effective_pos = entry.pos.clone();
+        if entry.pos == "verb" && !entry.definitions.is_empty()
+            && entry.definitions.iter().all(|d| def_has_tag(d, "participle"))
+        {
+            effective_pos = "participle".to_string();
+        }
+
+        let senses = entry
+            .definitions
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| d.as_str() != "No definition available")
+            .map(|(i, d)| {
+                let ex = entry.examples.get(i).and_then(|e| e.as_ref()).filter(|ex| !ex.text.is_empty());
+                ExportSense {
+                    gloss: strip_def_qualifiers(d),
+                    example: ex.map(|ex| ex.text.clone()),
+                    example_translation: ex.map(|ex| ex.translation.clone()).filter(|t| !t.is_empty()),
+                }
+            })
+            .collect();
+
+        let etymology = entry
+            .etymology
+            .as_deref()
+            .map(|t| clean_etymology(&strip_transliterations(t.trim())))
+            .filter(|t| !t.is_empty());
+
+        ExportEntry {
+            pos: entry.pos.clone(),
+            pos_display: self.format_pos(&effective_pos),
+            head: self.get_head_info_for_pos(&[entry], word),
+            etymology,
+            senses,
+        }
     }
 
     fn write_entry<W: Write>(&self, out: &mut W, word: &str, entries: &[Entry]) -> std::io::Result<()> {

@@ -7,6 +7,7 @@ use crate::epub::EpubGenerator;
 use crate::front_matter::{self, FrontMatter};
 use crate::html_gen::{BuildParams, HtmlGenerator};
 use crate::mobi::MobiGenerator;
+use crate::sqlite_export;
 use crate::stardict::StarDictGenerator;
 use crate::version::LEMMA_VERSION;
 use chrono::Local;
@@ -18,6 +19,7 @@ pub struct GeneratorOptions {
     pub generate_mobi: bool,
     pub generate_stardict: bool,
     pub generate_epub3: bool,
+    pub generate_sqlite: bool,
     pub max_inflections: Option<usize>,
     pub front_matter_path: Option<PathBuf>,
 }
@@ -90,6 +92,28 @@ pub fn run(opts: GeneratorOptions) -> Result<(), Box<dyn std::error::Error>> {
     html_gen.create_output_files()?;
     let output_dir = html_gen.output_dir.clone();
     let opf_filename = html_gen.opf_filename.clone();
+
+    // SQLite reads the generator's processed entries (after form-of merging
+    // and iform deduplication), so it runs before html_gen is dropped.
+    if opts.generate_sqlite {
+        let db_path = output_dir.join(format!("lemma_greek_{}.db", opts.source_lang));
+        println!("\nWriting SQLite database...");
+        let headwords = html_gen.export_headwords();
+        let meta = [
+            ("lemma_version", LEMMA_VERSION.to_string()),
+            ("source", format!("{} Wiktionary via kaikki.org", source_desc)),
+            ("source_lang", opts.source_lang.clone()),
+            ("build_date", build_date.clone()),
+            ("extraction_date", final_extraction_date.clone().unwrap_or_default()),
+        ];
+        let stats = sqlite_export::write_database(&db_path, &headwords, &meta)?;
+        let size_mb = std::fs::metadata(&db_path).map(|m| m.len() as f64 / 1_048_576.0).unwrap_or(0.0);
+        println!(
+            "  {} headwords, {} entries, {} senses, {} searchable forms ({:.1} MB)",
+            stats.headwords, stats.entries, stats.senses, stats.forms, size_mb
+        );
+        println!("  Wrote {}", db_path.display());
+    }
     drop(html_gen);
 
     // EPUB. With --epub3 we ship a proper EPUB3 dictionary (the format KDP's

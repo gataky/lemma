@@ -37,6 +37,11 @@ struct Cli {
     #[arg(long = "epub3", default_value_t = false)]
     epub3: bool,
 
+    /// Also write a SQLite database (headwords, senses, searchable forms with
+    /// accent-insensitive and phonetic lookup keys) into the build directory.
+    #[arg(long = "sqlite", default_value_t = false)]
+    sqlite: bool,
+
     /// Path to a JSON file that overrides front-matter fields.
     #[arg(long = "front-matter", value_name = "PATH")]
     front_matter: Option<PathBuf>,
@@ -63,6 +68,7 @@ fn main() {
         generate_mobi: cli.mobi,
         generate_stardict: cli.stardict,
         generate_epub3: cli.epub3,
+        generate_sqlite: cli.sqlite,
         max_inflections: cli.inflections,
         front_matter_path: cli.front_matter,
     };

@@ -109,6 +109,9 @@ cargo run --release -- --epub3
 # Generate every output (EPUB + MOBI + StarDict)
 cargo run --release -- -m --stardict
 
+# Also write a SQLite database for apps and ad-hoc queries
+cargo run --release -- --sqlite
+
 # Generate a test dictionary with only 10% of entries
 cargo run --release -- -l 10
 ```
@@ -119,11 +122,30 @@ cargo run --release -- -l 10
 - `-m, --mobi`: Also generate `.mobi` via Kindling (for sideloading)
 - `--stardict`: Also generate a StarDict bundle (`<output>/lemma_greek_en_stardict_v<version>/` plus a matching `dist/lemma_greek_en_stardict_v<version>.zip`) for GoldenDict, GoldenDict-ng, KOReader, sdcv, and other non-Kindle readers. The version suffix forces GoldenDict-ng's path-keyed metadata cache to invalidate on each release. Full builds (without `--limit`) refuse to write a bundle below 1000 headwords as a safeguard against shipping a partial test build by accident.
 - `--epub3`: Emit `lemma_greek_en.epub` as a valid [EPUB 3.3](https://www.w3.org/TR/epub-33/) dictionary, using the [EPUB Dictionaries and Glossaries](https://www.w3.org/TR/epub-dictionaries/) profile (XHTML content documents plus a Search Key Map, `dc:type=dictionary`, source/target-language metadata; validated clean by `epubcheck` under its DICT profile), instead of the legacy idx-HTML EPUB 2.0.1 markup. This is the format KDP's current converter accepts. The EPUB3 is built by the Kindling library (`kindling::epub_build::build_epub3`), which reads lemma's idx OPF directly and auto-detects the el->en dictionary; lemma no longer renders the EPUB3 markup itself. The MOBI/idx path is unaffected: the `.html` content files and OPF the MOBI build reads are untouched.
+- `--sqlite`: Also write `<output>/lemma_greek_en.db`, a SQLite database (see [SQLite Database](#sqlite-database)).
 - `-i, --inflections N`: Max inflections per headword (default: 255)
 - `--front-matter PATH`: Override the copyright/usage front-matter fields (edition name, tagline, features, copyright holder, extra copyright lines, data sources) from a JSON file. Unspecified fields fall through to the built-in defaults.
 - `-h, --help`: Show help message
 
 Cross-references, etymology, usage examples, and polytonic lookups are always enabled — lemma ships a single unified edition with the full feature set.
+
+### SQLite Database
+
+`--sqlite` stores the same processed data the Kindle build uses (after form-of merging and inflection deduplication) as plain tables:
+
+- `headword` (word, corpus frequency), `entry` (one per part of speech, with gender/plural head info and etymology), `sense` (gloss plus optional example and translation)
+- `form`: every searchable spelling of a headword, including inflected forms (είπα → λέω), with two lookup keys: `norm` (accent- and case-insensitive, `σπιτι`) and `phonetic` (by sound, so `σπητι`, `spiti` and σπίτι share the key `spiti`)
+- `meta`: schema version, lemma version, source, and Wiktionary extraction date
+
+The `lookup` tool queries it, accepting Greek (accents optional, misspellings tolerated) or Greeklish:
+
+```bash
+cargo run --release --bin lookup -- spiti
+cargo run --release --bin lookup                 # interactive
+cargo run --release --bin lookup -- --check tests/golden_queries.tsv
+```
+
+`tests/golden_queries.tsv` lists queries and the headword each should return; CI runs it against every build.
 
 ## Data Sources
 

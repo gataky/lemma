@@ -1,0 +1,11 @@
+# Golden English -> Greek queries that need English Wiktionary's translation
+# tables, i.e. a build with the English kaikki dump under
+# $KAIKKI_LOCAL_DIR/en/. CI has no dump, so run these locally:
+#   cargo run --release --bin lookup -- --check tests/golden_queries_translations.tsv
+# Same format as golden_queries.tsv.
+
+# Gloss-only ranking puts παράς (colloquial) and νενέ first.
+en:money	χρήμα
+en:grandmother	γιαγιά
+# Translation-table phrase with no Greek headword of its own.
+en:blacklist	μαύρη λίστα	2

@@ -51,3 +51,26 @@ geia	γεια	3
 tsai	τσάι
 anthropos	άνθρωπος
 poli	πολύ
+
+# English -> Greek (en: prefix)
+en:house	σπίτι
+en:houses	σπίτι
+en:bank	τράπεζα
+en:water	νερό
+en:cat	γάτα
+en:dog	σκυλί
+en:book	βιβλίο
+en:eat	τρώω
+en:to sleep	κοιμάμαι
+en:go	πηγαίνω
+en:bread	ψωμί
+en:friend	φίλος
+en:sea	θάλασσα
+en:kitchen	κουζίνα
+en:table	τραπέζι
+en:thank you	ευχαριστώ
+en:good morning	καλημέρα
+en:olive oil	ελαιόλαδο
+en:children	παιδί
+# εμπρός (the telephone "hello?") and χαίρετε tie with γεια.
+en:hello	γεια	3

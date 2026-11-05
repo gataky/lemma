@@ -135,17 +135,30 @@ Cross-references, etymology, usage examples, and polytonic lookups are always en
 
 - `headword` (word, corpus frequency), `entry` (one per part of speech, with gender/plural head info and etymology), `sense` (gloss plus optional example and translation)
 - `form`: every searchable spelling of a headword, including inflected forms (είπα → λέω), with two lookup keys: `norm` (accent- and case-insensitive, `σπιτι`) and `phonetic` (by sound, so `σπητι`, `spiti` and σπίτι share the key `spiti`)
+- `en_index`: English → Greek. English terms taken from the Greek entries' glosses, plus (optionally) English Wiktionary's translation tables, scored so curated translations and a gloss's leading words rank first. Translation-table words with no Greek entry of their own (μαύρη λίστα, "blacklist") are kept as text with no `headword_id`
+- `sense_fts`: FTS5 full-text index over glosses, used when `en_index` has no match
 - `meta`: schema version, lemma version, source, and Wiktionary extraction date
 
-The `lookup` tool queries it, accepting Greek (accents optional, misspellings tolerated) or Greeklish:
+For the translation tables, download the English kaikki dump (~534 MB gzipped) to `$KAIKKI_LOCAL_DIR/en/kaikki.org-dictionary-English.jsonl.gz`:
+
+```bash
+curl -L --fail -R --create-dirs \
+  -o "$KAIKKI_LOCAL_DIR/en/kaikki.org-dictionary-English.jsonl.gz" \
+  https://kaikki.org/dictionary/English/kaikki.org-dictionary-English.jsonl.gz
+```
+
+It is streamed without unpacking (about 7 s). Without it, `en_index` is built from glosses alone.
+
+The `lookup` tool queries the database, accepting Greek (accents optional, misspellings tolerated), Greeklish, or with `--en` English:
 
 ```bash
 cargo run --release --bin lookup -- spiti
+cargo run --release --bin lookup -- --en bank
 cargo run --release --bin lookup                 # interactive
 cargo run --release --bin lookup -- --check tests/golden_queries.tsv
 ```
 
-`tests/golden_queries.tsv` lists queries and the headword each should return; CI runs it against every build.
+`tests/golden_queries.tsv` lists queries and the headword each should return (`en:` marks English queries); CI runs it against every build. `tests/golden_queries_translations.tsv` holds English queries that need the translation tables, so run it locally after a build with the English dump.
 
 ## Data Sources
 

@@ -131,7 +131,7 @@ Cross-references, etymology, usage examples, and polytonic lookups are always en
 
 ### SQLite Database
 
-`--sqlite` stores the same processed data the Kindle build uses (after form-of merging and inflection deduplication) as plain tables:
+`--sqlite` stores the same processed data the Kindle build uses (after form-of merging and inflection deduplication) as plain tables. For using the database from another project (schema details, how to compute the lookup keys, queries, and a tested Python reference implementation), see [docs/sqlite-database.md](docs/sqlite-database.md).
 
 - `headword` (word, corpus frequency), `entry` (one per part of speech, with gender/plural head info and etymology), `sense` (gloss plus optional example and translation)
 - `form`: every searchable spelling of a headword, including inflected forms (είπα → λέω), with two lookup keys: `norm` (accent- and case-insensitive, `σπιτι`) and `phonetic` (by sound, so `σπητι`, `spiti` and σπίτι share the key `spiti`)

@@ -1,6 +1,8 @@
 pub mod declension;
 pub mod dilemma;
 pub mod downloader;
+pub mod en_translations;
+pub mod english_index;
 pub mod entry_processor;
 pub mod epub;
 pub mod frequency;

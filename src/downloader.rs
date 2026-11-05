@@ -178,23 +178,7 @@ impl Downloader {
     }
 
     fn find_local_kaikki_file(&self) -> Option<PathBuf> {
-        let mut kaikki_dir = std::env::var("KAIKKI_LOCAL_DIR").unwrap_or_default();
-        if kaikki_dir.is_empty() {
-            if let Ok(contents) = fs::read_to_string(".env") {
-                for line in contents.lines() {
-                    let line = line.trim();
-                    if line.is_empty() || line.starts_with('#') { continue; }
-                    if let Some((k, v)) = line.split_once('=') {
-                        if k.trim() == "KAIKKI_LOCAL_DIR" {
-                            kaikki_dir = v.trim().to_string();
-                        }
-                    }
-                }
-            }
-        }
-        if kaikki_dir.is_empty() { return None; }
-
-        let full_path = Path::new(&kaikki_dir).join(self.local_kaikki_rel());
+        let full_path = kaikki_local_dir()?.join(self.local_kaikki_rel());
         if !full_path.exists() { return None; }
         Some(full_path)
     }
@@ -278,6 +262,27 @@ impl Downloader {
             let _ = f.write_all(b"\n");
         }
     }
+}
+
+/// Directory of local kaikki dumps, from `KAIKKI_LOCAL_DIR` in the
+/// environment or in `.env`.
+pub fn kaikki_local_dir() -> Option<PathBuf> {
+    let mut kaikki_dir = std::env::var("KAIKKI_LOCAL_DIR").unwrap_or_default();
+    if kaikki_dir.is_empty() {
+        if let Ok(contents) = fs::read_to_string(".env") {
+            for line in contents.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') { continue; }
+                if let Some((k, v)) = line.split_once('=') {
+                    if k.trim() == "KAIKKI_LOCAL_DIR" {
+                        kaikki_dir = v.trim().to_string();
+                    }
+                }
+            }
+        }
+    }
+    if kaikki_dir.is_empty() { return None; }
+    Some(PathBuf::from(kaikki_dir))
 }
 
 fn count_lines(filename: &str) -> usize {

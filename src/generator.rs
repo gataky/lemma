@@ -2,6 +2,7 @@
 
 use crate::dilemma::DilemmaInflections;
 use crate::downloader::Downloader;
+use crate::en_translations;
 use crate::entry_processor::EntryProcessor;
 use crate::epub::EpubGenerator;
 use crate::front_matter::{self, FrontMatter};
@@ -98,6 +99,13 @@ pub fn run(opts: GeneratorOptions) -> Result<(), Box<dyn std::error::Error>> {
     if opts.generate_sqlite {
         let db_path = output_dir.join(format!("lemma_greek_{}.db", opts.source_lang));
         println!("\nWriting SQLite database...");
+        let translations = match en_translations::find_english_dump() {
+            Some(path) => en_translations::load(&path)?,
+            None => {
+                println!("  English kaikki dump not found under KAIKKI_LOCAL_DIR/en/; English index uses Greek glosses only");
+                Vec::new()
+            }
+        };
         let headwords = html_gen.export_headwords();
         let meta = [
             ("lemma_version", LEMMA_VERSION.to_string()),
@@ -106,11 +114,15 @@ pub fn run(opts: GeneratorOptions) -> Result<(), Box<dyn std::error::Error>> {
             ("build_date", build_date.clone()),
             ("extraction_date", final_extraction_date.clone().unwrap_or_default()),
         ];
-        let stats = sqlite_export::write_database(&db_path, &headwords, &meta)?;
+        let stats = sqlite_export::write_database(&db_path, &headwords, &translations, &meta)?;
         let size_mb = std::fs::metadata(&db_path).map(|m| m.len() as f64 / 1_048_576.0).unwrap_or(0.0);
         println!(
             "  {} headwords, {} entries, {} senses, {} searchable forms ({:.1} MB)",
             stats.headwords, stats.entries, stats.senses, stats.forms, size_mb
+        );
+        println!(
+            "  {} English terms; {} translations linked to headwords, {} kept as text only",
+            stats.en_terms, stats.translations_linked, stats.translations_unlinked
         );
         println!("  Wrote {}", db_path.display());
     }

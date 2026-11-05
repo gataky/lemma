@@ -3,14 +3,21 @@
 // The HTML generator stays the source of truth for which forms belong to
 // which headword (form-of merging, contested-iform ownership, ranking); it
 // hands over plain `ExportHeadword`s and this module only stores them, adding
-// the `greek_keys` lookup columns.
+// the `greek_keys` lookup columns and the English->Greek `en_index`.
 
+use crate::en_translations::EnTranslation;
+use crate::english_index;
 use crate::greek_keys;
 use rusqlite::{Connection, params};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
+
+/// Added to a term's gloss score when English Wiktionary's translation table
+/// also links the English word to the headword, so curated pairs outrank
+/// incidental gloss matches.
+pub const TRANSLATION_BOOST: u8 = 3;
 
 pub struct ExportSense {
     pub gloss: String,
@@ -40,6 +47,19 @@ pub struct ExportStats {
     pub entries: usize,
     pub senses: usize,
     pub forms: usize,
+    pub en_terms: usize,
+    pub translations_linked: usize,
+    /// Translations whose Greek word or phrase matches no headword or form;
+    /// they are kept in en_index as text with no headword_id.
+    pub translations_unlinked: usize,
+}
+
+struct EnRow {
+    headword_id: Option<i64>,
+    score: u8,
+    sense_id: Option<i64>,
+    note: Option<String>,
+    from_translation: bool,
 }
 
 const SCHEMA: &str = "
@@ -68,7 +88,10 @@ CREATE TABLE sense (
     ord                 INTEGER NOT NULL,
     gloss               TEXT NOT NULL,
     example             TEXT,
-    example_translation TEXT
+    example_translation TEXT,
+    -- 1 when the gloss points at another Greek word ('plural of ...')
+    -- instead of giving a meaning.
+    is_reference        INTEGER NOT NULL
 );
 -- Every searchable spelling of a headword, the headword itself included,
 -- deduplicated per headword by norm (polytonic variants collapse onto their
@@ -80,6 +103,24 @@ CREATE TABLE form (
     phonetic    TEXT NOT NULL,
     PRIMARY KEY (norm, headword_id)
 ) WITHOUT ROWID;
+-- English->Greek: normalized English term (english_index::normalize_term)
+-- to a Greek word or phrase. headword_id is set when the Greek is one of
+-- our headwords (or a form of one), NULL for translation-table words we
+-- have no entry for. sense_id is the gloss the term came from; note is the
+-- translation table's sense label.
+CREATE TABLE en_index (
+    term        TEXT NOT NULL,
+    greek       TEXT NOT NULL,
+    headword_id INTEGER REFERENCES headword(id),
+    score       INTEGER NOT NULL,
+    sense_id    INTEGER REFERENCES sense(id),
+    note        TEXT,
+    PRIMARY KEY (term, greek)
+) WITHOUT ROWID;
+-- Full-text fallback over glosses for English queries en_index misses.
+CREATE VIRTUAL TABLE sense_fts USING fts5(
+    gloss, content='sense', content_rowid='id', tokenize='porter unicode61'
+);
 ";
 
 // Built after the bulk insert, which is faster than maintaining them per row.
@@ -88,6 +129,7 @@ CREATE INDEX entry_headword ON entry(headword_id);
 CREATE INDEX sense_entry ON sense(entry_id);
 CREATE INDEX form_phonetic ON form(phonetic);
 CREATE INDEX form_headword ON form(headword_id);
+INSERT INTO sense_fts(sense_fts) VALUES ('rebuild');
 ANALYZE;
 ";
 
@@ -95,6 +137,7 @@ ANALYZE;
 pub fn write_database(
     path: &Path,
     headwords: &[ExportHeadword],
+    translations: &[EnTranslation],
     meta: &[(&str, String)],
 ) -> rusqlite::Result<ExportStats> {
     if path.exists() {
@@ -103,16 +146,25 @@ pub fn write_database(
     let mut conn = Connection::open(path)?;
     // A failed build is simply rerun, so durability is not needed.
     conn.execute_batch("PRAGMA journal_mode = OFF; PRAGMA synchronous = OFF;")?;
-    write_to(&mut conn, headwords, meta)
+    write_to(&mut conn, headwords, translations, meta)
 }
 
 pub fn write_to(
     conn: &mut Connection,
     headwords: &[ExportHeadword],
+    translations: &[EnTranslation],
     meta: &[(&str, String)],
 ) -> rusqlite::Result<ExportStats> {
     conn.execute_batch(SCHEMA)?;
     let mut stats = ExportStats::default();
+    // Keyed by (term, Greek text); linked rows use the headword's spelling so
+    // gloss and translation evidence for the same headword merge.
+    let mut en_rows: HashMap<(String, String), EnRow> = HashMap::new();
+    // Lowercased headword -> (headword_id, frequency), for linking
+    // translation targets. Only exact headword spellings count: inflected
+    // forms (λεπτά "money" is also a form of λεπτός "thin") and accent
+    // differences (πλαγιά "slope" vs πλάγια "obliquely") pick the wrong word.
+    let mut headword_by_spelling: HashMap<String, (i64, i64)> = HashMap::new();
 
     let tx = conn.transaction()?;
     {
@@ -123,8 +175,8 @@ pub fn write_to(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
         let mut ins_sense = tx.prepare(
-            "INSERT INTO sense (id, entry_id, ord, gloss, example, example_translation)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO sense (id, entry_id, ord, gloss, example, example_translation, is_reference)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
         let mut ins_form = tx.prepare(
             "INSERT INTO form (norm, headword_id, form, phonetic) VALUES (?1, ?2, ?3, ?4)",
@@ -149,11 +201,28 @@ pub fn write_to(
                 ])?;
                 for (sense_ord, s) in e.senses.iter().enumerate() {
                     stats.senses += 1;
+                    let sense_id = stats.senses as i64;
                     ins_sense.execute(params![
-                        stats.senses as i64, entry_id, sense_ord as i64,
-                        s.gloss, s.example, s.example_translation
+                        sense_id, entry_id, sense_ord as i64,
+                        s.gloss, s.example, s.example_translation,
+                        english_index::is_reference_gloss(&s.gloss)
                     ])?;
+                    for (term, score) in english_index::gloss_terms(&s.gloss, sense_ord) {
+                        let row = en_rows.entry((term, hw.word.clone())).or_insert(EnRow {
+                            headword_id: Some(headword_id),
+                            score: 0, sense_id: None, note: None, from_translation: false,
+                        });
+                        if score > row.score {
+                            row.score = score;
+                            row.sense_id = Some(sense_id);
+                        }
+                    }
                 }
+            }
+
+            let spelling = hw.word.to_lowercase();
+            if headword_by_spelling.get(&spelling).is_none_or(|&(_, freq)| hw.frequency > freq) {
+                headword_by_spelling.insert(spelling, (headword_id, hw.frequency));
             }
 
             let mut seen: HashSet<String> = HashSet::new();
@@ -166,6 +235,42 @@ pub fn write_to(
                 stats.forms += 1;
             }
         }
+
+        for t in translations {
+            let term = english_index::normalize_term(&t.english);
+            if term.is_empty() {
+                continue;
+            }
+            let headword_id = headword_by_spelling.get(&t.greek.to_lowercase()).map(|&(id, _)| id);
+            let greek = match headword_id {
+                Some(id) => {
+                    stats.translations_linked += 1;
+                    headwords[id as usize - 1].word.clone()
+                }
+                None => {
+                    stats.translations_unlinked += 1;
+                    t.greek.clone()
+                }
+            };
+            let row = en_rows.entry((term, greek)).or_insert(EnRow {
+                headword_id,
+                score: 0, sense_id: None, note: None, from_translation: false,
+            });
+            if !row.from_translation {
+                row.from_translation = true;
+                row.score += TRANSLATION_BOOST;
+                row.note = t.sense.clone();
+            }
+        }
+
+        let mut ins_en = tx.prepare(
+            "INSERT INTO en_index (term, greek, headword_id, score, sense_id, note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?;
+        for ((term, greek), row) in &en_rows {
+            ins_en.execute(params![term, greek, row.headword_id, row.score, row.sense_id, row.note])?;
+        }
+        stats.en_terms = en_rows.len();
     }
     tx.commit()?;
     conn.execute_batch(INDEXES)?;
@@ -221,10 +326,66 @@ mod tests {
         ]
     }
 
+    fn translations() -> Vec<EnTranslation> {
+        let t = |english: &str, greek: &str, sense: &str| EnTranslation {
+            english: english.to_string(),
+            greek: greek.to_string(),
+            sense: Some(sense.to_string()),
+        };
+        vec![
+            t("house", "σπίτι", "abode"),
+            t("houses", "σπίτι", "plural, should merge"),
+            t("town", "πόλη", "settlement"),
+            t("parliament", "βουλή", "not a headword here"),
+        ]
+    }
+
     fn build() -> (Connection, ExportStats) {
         let mut conn = Connection::open_in_memory().unwrap();
-        let stats = write_to(&mut conn, &sample(), &[("source", "test".to_string())]).unwrap();
+        let stats = write_to(&mut conn, &sample(), &translations(), &[("source", "test".to_string())]).unwrap();
         (conn, stats)
+    }
+
+    fn en_row(conn: &Connection, term: &str, greek: &str) -> Option<(i64, Option<String>)> {
+        conn.query_row(
+            "SELECT score, note FROM en_index WHERE term = ?1 AND greek = ?2",
+            [term, greek],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()
+    }
+
+    #[test]
+    fn gloss_terms_and_translations_meet_in_en_index() {
+        let (conn, stats) = build();
+        // "house, home": first-clause gloss score plus the translation boost.
+        assert_eq!(
+            en_row(&conn, "house", "σπίτι"),
+            Some(((english_index::SCORE_FIRST_CLAUSE + TRANSLATION_BOOST) as i64, Some("abode".to_string())))
+        );
+        assert_eq!(en_row(&conn, "home", "σπίτι"), Some((english_index::SCORE_FIRST_CLAUSE as i64, None)));
+        // Translation-only pair, no gloss mentions "town".
+        assert_eq!(en_row(&conn, "town", "πόλη"), Some((TRANSLATION_BOOST as i64, Some("settlement".to_string()))));
+        assert_eq!(stats.translations_linked, 3);
+        assert_eq!(stats.translations_unlinked, 1);
+    }
+
+    #[test]
+    fn unlinked_translation_is_kept_as_text() {
+        let (conn, _) = build();
+        let headword_id: Option<i64> = conn
+            .query_row("SELECT headword_id FROM en_index WHERE term = 'parliament' AND greek = 'βουλή'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(headword_id, None);
+    }
+
+    #[test]
+    fn full_text_fallback_finds_words_inside_glosses() {
+        let (conn, _) = build();
+        let gloss: String = conn
+            .query_row("SELECT s.gloss FROM sense_fts JOIN sense s ON s.id = sense_fts.rowid WHERE sense_fts MATCH 'much'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(gloss, "very, much");
     }
 
     #[test]

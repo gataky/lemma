@@ -3,12 +3,14 @@
 // Usage:
 //     cargo run --release --bin lookup -- σπίτι
 //     cargo run --release --bin lookup -- spiti        # Greeklish
+//     cargo run --release --bin lookup -- --en house   # English -> Greek
 //     cargo run --release --bin lookup                 # interactive
 //     cargo run --release --bin lookup -- --check tests/golden_queries.tsv
 //
 // The check file has one `query<TAB>expected headword[<TAB>N]` per line (#
 // starts a comment); each query passes when the expected headword is among
-// the top N results (default 1), compared accent- and case-insensitively.
+// the top N results (default 1), compared accent- and case-insensitively. A
+// query prefixed with `en:` is looked up English -> Greek.
 
 use clap::Parser;
 use lemma::greek_keys;
@@ -33,6 +35,10 @@ struct Cli {
     #[arg(long = "check", value_name = "FILE")]
     check: Option<PathBuf>,
 
+    /// Look up English words and show their Greek equivalents.
+    #[arg(long = "en", default_value_t = false)]
+    english: bool,
+
     /// Word to look up. Without one, reads queries from stdin.
     query: Vec<String>,
 }
@@ -51,8 +57,10 @@ fn main() -> ExitCode {
         return run_check(&conn, path);
     }
 
+    let print = if cli.english { print_english } else { print_lookup };
+
     if !cli.query.is_empty() {
-        print_lookup(&conn, &cli.query.join(" "), cli.limit);
+        print(&conn, &cli.query.join(" "), cli.limit);
         return ExitCode::SUCCESS;
     }
 
@@ -65,7 +73,7 @@ fn main() -> ExitCode {
             break;
         }
         if !line.trim().is_empty() {
-            print_lookup(&conn, &line, cli.limit);
+            print(&conn, &line, cli.limit);
         }
     }
     ExitCode::SUCCESS
@@ -94,6 +102,40 @@ fn print_lookup(conn: &Connection, query: &str, limit: usize) {
             println!("    {}: {}", pos, glosses.join("; "));
         }
     }
+}
+
+fn print_english(conn: &Connection, query: &str, limit: usize) {
+    let hits = match lookup::search_english(conn, query, limit) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("Query failed: {}", e);
+            return;
+        }
+    };
+    if hits.is_empty() {
+        println!("No matches for {:?}", query.trim());
+        return;
+    }
+    if hits[0].full_text {
+        println!("(no direct match; glosses mentioning {:?})", query.trim());
+    }
+    let width = hits.iter().map(|h| h.greek.chars().count()).max().unwrap_or(0);
+    for hit in &hits {
+        let mut detail = hit.gloss.as_deref().map(|g| shorten(g, 70)).unwrap_or_default();
+        if let Some(note) = &hit.note {
+            detail = if detail.is_empty() { format!("[{}]", note) } else { format!("{}  [{}]", detail, note) };
+        }
+        let pad = width - hit.greek.chars().count();
+        println!("  {}{}  {}", hit.greek, " ".repeat(pad), detail);
+    }
+}
+
+fn shorten(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let cut: String = s.chars().take(max_chars - 1).collect();
+    format!("{}…", cut.trim_end())
 }
 
 fn headline(hit: &Hit) -> String {
@@ -132,12 +174,23 @@ fn run_check(conn: &Connection, path: &PathBuf) -> ExitCode {
                 continue;
             }
         };
-        let hits = lookup::search(conn, query, within).unwrap_or_default();
-        if hits.iter().any(|h| greek_keys::norm(&h.word) == greek_keys::norm(expected)) {
+        let (words, got) = match query.strip_prefix("en:") {
+            Some(english) => {
+                let hits = lookup::search_english(conn, english, within).unwrap_or_default();
+                let got = hits.first().map(|h| h.greek.clone());
+                (hits.into_iter().map(|h| h.greek).collect::<Vec<_>>(), got)
+            }
+            None => {
+                let hits = lookup::search(conn, query, within).unwrap_or_default();
+                let got = hits.first().map(headline);
+                (hits.into_iter().map(|h| h.word).collect(), got)
+            }
+        };
+        if words.iter().any(|w| greek_keys::norm(w) == greek_keys::norm(expected)) {
             passed += 1;
         } else {
             failed += 1;
-            let got = hits.first().map(headline).unwrap_or_else(|| "no match".to_string());
+            let got = got.unwrap_or_else(|| "no match".to_string());
             let scope = if within == 1 { String::new() } else { format!(" in top {}", within) };
             println!("FAIL  {:<16} expected {}{:<10} got {}", query, expected, scope, got);
         }

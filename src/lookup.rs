@@ -6,10 +6,14 @@
 // keeping each headword's best match, and ranked by match quality, then the
 // Greeklish reading penalty (x read as χ beats x read as ξ), then corpus
 // frequency.
+//
+// English queries go through `en_index` (glosses plus English Wiktionary
+// translation tables), falling back to full-text search over glosses.
 
+use crate::english_index;
 use crate::greek_keys;
-use rusqlite::{Connection, params_from_iter};
-use std::collections::HashMap;
+use rusqlite::{Connection, params, params_from_iter};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum MatchKind {
@@ -36,6 +40,22 @@ impl Hit {
     fn rank(&self) -> (MatchKind, u8) {
         (self.kind, self.penalty)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct EnHit {
+    /// Greek word or phrase.
+    pub greek: String,
+    /// Set when the Greek is a dictionary headword, for a full lookup.
+    pub headword_id: Option<i64>,
+    pub score: i64,
+    /// The gloss that matched, or the headword's first gloss when the match
+    /// came from a translation table alone.
+    pub gloss: Option<String>,
+    /// Translation table's sense label, e.g. "financial institution".
+    pub note: Option<String>,
+    /// Found by full-text search over glosses rather than `en_index`.
+    pub full_text: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -115,6 +135,96 @@ fn keep_best(best: &mut HashMap<i64, Hit>, hit: Hit) {
     }
 }
 
+const SELECT_EN: &str = "
+    SELECT e.greek, e.headword_id, e.score,
+           COALESCE(s.gloss, (
+               SELECT s2.gloss FROM entry e2 JOIN sense s2 ON s2.entry_id = e2.id
+               WHERE e2.headword_id = e.headword_id
+               ORDER BY s2.is_reference, e2.ord, s2.ord LIMIT 1)),
+           e.note
+    FROM en_index e
+    LEFT JOIN headword h ON h.id = e.headword_id
+    LEFT JOIN sense s ON s.id = e.sense_id
+    WHERE e.term = ?1
+    ORDER BY e.score DESC, COALESCE(h.frequency, 0) DESC, e.greek
+    LIMIT ?2";
+
+const SELECT_EN_FULL_TEXT: &str = "
+    SELECT h.word, h.id, s.gloss
+    FROM sense_fts
+    JOIN sense s ON s.id = sense_fts.rowid
+    JOIN entry en ON en.id = s.entry_id
+    JOIN headword h ON h.id = en.headword_id
+    WHERE sense_fts MATCH ?1
+    ORDER BY bm25(sense_fts), h.frequency DESC
+    LIMIT ?2";
+
+/// English -> Greek. Ranked by `en_index` score (gloss position plus the
+/// translation-table boost), then Greek frequency.
+pub fn search_english(conn: &Connection, query: &str, limit: usize) -> rusqlite::Result<Vec<EnHit>> {
+    let term = english_index::normalize_term(query);
+    if term.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn.prepare_cached(SELECT_EN)?;
+    let hits = stmt
+        .query_map(params![term, limit as i64], |r| {
+            Ok(EnHit {
+                greek: r.get(0)?,
+                headword_id: r.get(1)?,
+                score: r.get(2)?,
+                gloss: r.get(3)?,
+                note: r.get(4)?,
+                full_text: false,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !hits.is_empty() {
+        return Ok(hits);
+    }
+    search_english_full_text(conn, query, limit)
+}
+
+fn search_english_full_text(conn: &Connection, query: &str, limit: usize) -> rusqlite::Result<Vec<EnHit>> {
+    // Quote each word so FTS5 operators in the query are taken literally.
+    let words: Vec<String> = query
+        .split_whitespace()
+        .map(|w| w.replace('"', ""))
+        .filter(|w| !w.is_empty())
+        .map(|w| format!("\"{}\"", w))
+        .collect();
+    if words.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut stmt = conn.prepare_cached(SELECT_EN_FULL_TEXT)?;
+    // Several senses of one headword can match; fetch extra rows to fill
+    // `limit` distinct headwords.
+    let rows = stmt.query_map(params![words.join(" "), (limit * 5) as i64], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, String>(2)?))
+    })?;
+    let mut hits: Vec<EnHit> = Vec::new();
+    let mut seen: HashSet<i64> = HashSet::new();
+    for row in rows {
+        let (word, headword_id, gloss) = row?;
+        if !seen.insert(headword_id) {
+            continue;
+        }
+        hits.push(EnHit {
+            greek: word,
+            headword_id: Some(headword_id),
+            score: 0,
+            gloss: Some(gloss),
+            note: None,
+            full_text: true,
+        });
+        if hits.len() >= limit {
+            break;
+        }
+    }
+    Ok(hits)
+}
+
 pub fn entries(conn: &Connection, headword_id: i64) -> rusqlite::Result<Vec<EntryView>> {
     let mut entry_stmt = conn.prepare_cached(
         "SELECT id, pos_display, head FROM entry WHERE headword_id = ?1 ORDER BY ord",
@@ -140,6 +250,7 @@ pub fn entries(conn: &Connection, headword_id: i64) -> rusqlite::Result<Vec<Entr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::en_translations::EnTranslation;
     use crate::sqlite_export::{self, ExportEntry, ExportHeadword, ExportSense};
 
     fn headword(word: &str, frequency: i64, gloss: &str, forms: &[&str]) -> ExportHeadword {
@@ -164,9 +275,40 @@ mod tests {
             headword("πόλη", 800, "city", &["πόλεις"]),
             headword("πολύ", 9000, "very", &[]),
             headword("λέω", 7000, "to say", &["είπα", "λες"]),
+            headword("οίκος", 9500, "house", &[]),
+            headword("θάλασσα", 3000, "a large body of salt water", &[]),
         ];
-        sqlite_export::write_to(&mut conn, &hws, &[]).unwrap();
+        let translations = vec![
+            EnTranslation { english: "house".into(), greek: "σπίτι".into(), sense: Some("abode".into()) },
+            EnTranslation { english: "parliament".into(), greek: "βουλή".into(), sense: None },
+        ];
+        sqlite_export::write_to(&mut conn, &hws, &translations, &[]).unwrap();
         conn
+    }
+
+    fn en_words(conn: &Connection, q: &str) -> Vec<String> {
+        search_english(conn, q, 5).unwrap().into_iter().map(|h| h.greek).collect()
+    }
+
+    #[test]
+    fn english_translation_boost_beats_frequency() {
+        let conn = db();
+        // οίκος is more frequent, but only σπίτι is backed by a translation.
+        assert_eq!(en_words(&conn, "Houses"), vec!["σπίτι", "οίκος"]);
+    }
+
+    #[test]
+    fn english_translation_only_word_has_no_headword() {
+        let conn = db();
+        let hit = search_english(&conn, "parliament", 5).unwrap().remove(0);
+        assert_eq!((hit.greek.as_str(), hit.headword_id, hit.gloss), ("βουλή", None, None));
+    }
+
+    #[test]
+    fn english_falls_back_to_full_text() {
+        let conn = db();
+        let hit = search_english(&conn, "salt water", 5).unwrap().remove(0);
+        assert_eq!((hit.greek.as_str(), hit.full_text), ("θάλασσα", true));
     }
 
     fn top(conn: &Connection, q: &str) -> (String, String, MatchKind) {

@@ -128,9 +128,12 @@ pub fn phonetic(s: &str) -> String {
 }
 
 // Greeklish spellings and the phonetic symbols each may stand for. Matched
-// longest first; ambiguous letters list every reading (h is η or χ, x is χ
-// or ξ, u is ου or υ, y is υ or γ).
+// longest first; ambiguous letters list every reading, most common first
+// (h is usually η, x usually χ, u usually ου, y usually υ). The three-letter
+// spellings stop "nt"/"mp" from swallowing the start of "th"/"ph"
+// (anthropos is ν+θ, not ντ+η).
 const GREEKLISH: &[(&str, &[&str])] = &[
+    ("nth", &["n8"]), ("mph", &["mf"]),
     ("th", &["8"]), ("ch", &["h"]), ("ph", &["f"]),
     ("ou", &["u"]), ("ei", &["i"]), ("oi", &["i", "oi"]), ("ui", &["i"]),
     ("ai", &["e", "ai"]),
@@ -146,14 +149,14 @@ const GREEKLISH: &[(&str, &[&str])] = &[
     ("8", &["8"]), ("3", &["ks"]),
 ];
 
-fn greeklish_keys(s: &str) -> Vec<String> {
+fn greeklish_keys(s: &str) -> Vec<(String, u8)> {
     let latin: String = s
         .nfd()
         .filter(|c| !is_combining_mark(*c))
         .flat_map(|c| c.to_lowercase())
         .collect();
 
-    let mut candidates: Vec<String> = vec![String::new()];
+    let mut candidates: Vec<(String, u8)> = vec![(String::new(), 0)];
     let mut rest = latin.as_str();
     while !rest.is_empty() {
         let matched = GREEKLISH.iter().find(|(spelling, _)| rest.starts_with(spelling));
@@ -164,32 +167,36 @@ fn greeklish_keys(s: &str) -> Vec<String> {
             continue;
         };
         rest = &rest[spelling.len()..];
-        let mut next: Vec<String> = Vec::new();
-        'outer: for c in &candidates {
-            for r in *readings {
-                if next.len() >= MAX_QUERY_KEYS { break 'outer; }
-                next.push(format!("{}{}", c, r));
+        let mut next: Vec<(String, u8)> = Vec::new();
+        for (c, penalty) in &candidates {
+            for (rank, r) in readings.iter().enumerate() {
+                next.push((format!("{}{}", c, r), penalty + rank as u8));
             }
         }
+        // Keep the most likely readings when the expansion gets large.
+        next.sort_by_key(|(_, p)| *p);
+        next.truncate(MAX_QUERY_KEYS);
         candidates = next;
     }
 
-    let mut keys: Vec<String> = Vec::new();
-    for c in candidates {
+    let mut keys: Vec<(String, u8)> = Vec::new();
+    for (c, penalty) in candidates {
         let k = collapse_repeats(&c);
-        if !k.is_empty() && !keys.contains(&k) {
-            keys.push(k);
+        if !k.is_empty() && !keys.iter().any(|(existing, _)| *existing == k) {
+            keys.push((k, penalty));
         }
     }
     keys
 }
 
-/// Phonetic keys to search for a user query, Greek or Greeklish. Greek input
-/// has exactly one key; Greeklish may have several readings.
-pub fn query_keys(s: &str) -> Vec<String> {
+/// Phonetic keys to search for a user query, Greek or Greeklish, each with a
+/// penalty: 0 for the most common reading, plus one for every ambiguous
+/// Greeklish letter read the less common way. Greek input has exactly one
+/// key. Sorted by penalty.
+pub fn query_keys(s: &str) -> Vec<(String, u8)> {
     if is_greek(s) {
         let k = phonetic(s);
-        if k.is_empty() { Vec::new() } else { vec![k] }
+        if k.is_empty() { Vec::new() } else { vec![(k, 0)] }
     } else {
         greeklish_keys(s)
     }
@@ -248,8 +255,13 @@ mod tests {
         assert_eq!(phonetic("Ευρώπη"), "evropi");
     }
 
+    fn penalty(query: &str, word: &str) -> Option<u8> {
+        let target = phonetic(word);
+        query_keys(query).into_iter().find(|(k, _)| *k == target).map(|(_, p)| p)
+    }
+
     fn reaches(query: &str, word: &str) -> bool {
-        query_keys(query).contains(&phonetic(word))
+        penalty(query, word).is_some()
     }
 
     #[test]
@@ -268,11 +280,20 @@ mod tests {
         assert!(reaches("tsai", "τσάι"));
         assert!(reaches("ellhnika", "ελληνικά"));
         assert!(reaches("Spíti", "σπίτι"));
+        assert!(reaches("anthropos", "άνθρωπος"));
+        assert!(reaches("nymphi", "νύμφη"));
+    }
+
+    #[test]
+    fn common_greeklish_readings_have_lower_penalty() {
+        assert_eq!(penalty("xeri", "χέρι"), Some(0));
+        assert_eq!(penalty("xeri", "ξέρει"), Some(1));
+        assert_eq!(penalty("kalhmera", "καλημέρα"), Some(0));
     }
 
     #[test]
     fn greek_query_has_single_key() {
-        assert_eq!(query_keys("σπητι"), vec!["spiti".to_string()]);
+        assert_eq!(query_keys("σπητι"), vec![("spiti".to_string(), 0)]);
         assert!(query_keys("").is_empty());
     }
 

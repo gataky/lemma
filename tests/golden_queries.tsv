@@ -1,0 +1,53 @@
+# Golden lookup queries: query<TAB>expected headword[<TAB>N].
+# Passes when the expected headword is in the top N results (default 1).
+# Run: cargo run --release --bin lookup -- --check tests/golden_queries.tsv
+# Add the words you actually look up; a failure here is a ranking regression.
+# Use N > 1 only for true homophones, where frequency rightly decides.
+
+# Exact and accent-insensitive Greek
+σπίτι	σπίτι
+σπιτι	σπίτι
+ΘΆΛΑΣΣΑ	θάλασσα
+νερο	νερό
+ψωμί	ψωμί
+γεια	γεια
+τσάι	τσάι
+
+# Misspelled Greek (by sound)
+σπητι	σπίτι
+θαλασα	θάλασσα
+ανθροπος	άνθρωπος
+καλιμερα	καλημέρα
+ευχαρηστω	ευχαριστώ
+παιδη	παιδί
+
+# Inflected forms to lemma
+είπα	λέω
+πήγα	πηγαίνω
+δρόμους	δρόμος
+παιδιά	παιδί
+γυναίκες	γυναίκα
+ήμουν	είμαι
+
+# Polytonic
+ἄνθρωπος	άνθρωπος
+
+# Greeklish
+spiti	σπίτι
+kalimera	καλημέρα
+kalhmera	καλημέρα
+thalassa	θάλασσα
+8alassa	θάλασσα
+efharisto	ευχαριστώ
+eyxaristw	ευχαριστώ
+nero	νερό
+psomi	ψωμί
+pedi	παιδί
+paidi	παιδί
+xeri	χέρι
+kseri	ξέρω
+# γεια (hello) and για (for) sound the same; the commoner για ranks first.
+geia	γεια	3
+tsai	τσάι
+anthropos	άνθρωπος
+poli	πολύ

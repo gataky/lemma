@@ -6,6 +6,7 @@ pub mod epub;
 pub mod frequency;
 pub mod front_matter;
 pub mod generator;
+pub mod greek_keys;
 pub mod html_escape;
 pub mod html_gen;
 pub mod mobi;

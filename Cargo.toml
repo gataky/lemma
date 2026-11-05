@@ -25,6 +25,8 @@ quick-xml = "0.36"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 httpdate = "1"
 kindling = { version = "0.45.2", package = "kindling-mobi" }
+rusqlite = { version = "0.41.1", features = ["bundled"] }
+unicode-normalization = "0.1.26"
 
 [profile.release]
 opt-level = 3

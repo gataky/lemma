@@ -52,7 +52,7 @@ fn strip_tags() -> &'static HashSet<&'static str> {
     })
 }
 
-fn greek_word_re() -> &'static Regex {
+pub(crate) fn greek_word_re() -> &'static Regex {
     static R: OnceLock<Regex> = OnceLock::new();
     R.get_or_init(|| Regex::new(r"([\u0370-\u03FF\u1F00-\u1FFF]+)").unwrap())
 }
@@ -114,6 +114,14 @@ pub struct BuildParams {
     pub limit_percent: Option<f64>,
     pub max_inflections: Option<usize>,
     pub front_matter: Value,
+}
+
+/// Searchable forms of one headword, as computed by `HtmlGenerator::entry_forms`.
+pub(crate) struct EntryForms {
+    /// Ranked inflected forms, most frequent first.
+    pub inflections: Vec<String>,
+    /// (polytonic variant, monotonic form it was derived from).
+    pub polytonic: Vec<(String, String)>,
 }
 
 pub struct HtmlGenerator<'a> {
@@ -187,11 +195,35 @@ impl<'a> HtmlGenerator<'a> {
         Ok(())
     }
 
+    /// Format-neutral preparation shared by every output: fold form-of
+    /// entries into their parents and decide which headword owns each
+    /// contested inflected form. Must run before `entry_forms` is called.
+    /// The SQLite exporter calls this directly without writing any HTML.
+    pub fn prepare(&mut self) {
+        self.merge_form_of_into_parents();
+        self.build_iform_owners();
+    }
+
+    /// The prepared headword -> entries map (valid after `prepare`).
+    pub(crate) fn entries(&self) -> &EntryMap {
+        &self.entries
+    }
+
+    /// The headword that owns a contested inflected form, if the form is
+    /// claimed by more than one headword.
+    pub(crate) fn iform_owner_of(&self, form: &str) -> Option<&str> {
+        self.iform_owner.get(form).map(|s| s.as_str())
+    }
+
+    /// Corpus frequency of a word (OpenSubtitles counts from data/el_full.txt).
+    pub(crate) fn frequency_of(&self, word: &str) -> i64 {
+        self.frequency.frequency(word)
+    }
+
     fn create_content_html(&mut self) -> std::io::Result<()> {
         println!("Creating per-letter content files...");
 
-        self.merge_form_of_into_parents();
-        self.build_iform_owners();
+        self.prepare();
 
         // Sort keys by normalized form
         let mut sorted_keys: Vec<String> = self.entries.keys().cloned().collect();
@@ -454,7 +486,31 @@ impl<'a> HtmlGenerator<'a> {
     /// keeping the two outputs in agreement.
     fn entry_variations(&self, word: &str, entries: &[Entry]) -> Vec<String> {
         let max_inflections = self.params.max_inflections.unwrap_or(MAX_INFLECTIONS);
+        let forms = self.entry_forms(word, entries, max_inflections, MAX_POLYTONIC, true);
+        let mut all_variations = forms.inflections;
+        all_variations.extend(forms.polytonic.into_iter().map(|(variant, _source)| variant));
+        all_variations
+    }
 
+    /// The searchable forms of a headword, split by kind. Inflections come
+    /// back ranked (most frequent first) and capped at `max_inflections`;
+    /// polytonic variants are paired with the monotonic form they were
+    /// derived from (the headword itself or one of the inflections) and
+    /// capped at `max_polytonic`.
+    ///
+    /// When `drop_contested` is true, inflections owned by another headword
+    /// (see `build_iform_owners`) are removed before polytonic expansion, as
+    /// Kindle needs one owner per form. The SQLite export passes false and
+    /// records ownership instead, since a database can map one form to
+    /// several lemmas.
+    pub(crate) fn entry_forms(
+        &self,
+        word: &str,
+        entries: &[Entry],
+        max_inflections: usize,
+        max_polytonic: usize,
+        drop_contested: bool,
+    ) -> EntryForms {
         // Combine all inflections from all entries
         let mut all_inflections: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
@@ -473,7 +529,7 @@ impl<'a> HtmlGenerator<'a> {
             lower.contains("proper") || lower.contains("name")
         });
 
-        let mut all_variations: Vec<String> = if is_proper_noun {
+        let mut inflections: Vec<String> = if is_proper_noun {
             single_word.into_iter().take(max_inflections).collect()
         } else if self.use_ranked_forms {
             self.select_ranked_inflections(word, &single_word, max_inflections)
@@ -483,42 +539,41 @@ impl<'a> HtmlGenerator<'a> {
         };
 
         // Remove iforms owned by a higher-frequency headword
-        all_variations.retain(|inf| {
-            self.iform_owner.get(inf).map(|w| w.as_str() == word).unwrap_or(true)
-        });
+        if drop_contested {
+            inflections.retain(|inf| {
+                self.iform_owner.get(inf).map(|w| w.as_str() == word).unwrap_or(true)
+            });
+        }
 
         // Polytonic expansion (always enabled in the unified edition).
-        {
-            let mut all_forms: Vec<String> = Vec::with_capacity(all_variations.len() + 1);
-            all_forms.push(word.to_string());
-            all_forms.extend(all_variations.iter().cloned());
-            let mut polytonic_forms: Vec<String> = Vec::new();
-            let mut seen_poly: HashSet<String> = all_forms.iter().cloned().collect();
+        let mut all_forms: Vec<String> = Vec::with_capacity(inflections.len() + 1);
+        all_forms.push(word.to_string());
+        all_forms.extend(inflections.iter().cloned());
+        let mut polytonic: Vec<(String, String)> = Vec::new();
+        let mut seen_poly: HashSet<String> = all_forms.iter().cloned().collect();
 
-            let dilemma_has_poly = self.dilemma.map(|d| d.has_polytonic_ranked()).unwrap_or(false);
-            if dilemma_has_poly {
-                let dilemma = self.dilemma.unwrap();
-                for form in &all_forms {
-                    for pv in dilemma.get_polytonic_variants(form) {
-                        if seen_poly.insert(pv.clone()) {
-                            polytonic_forms.push(pv.clone());
-                        }
-                    }
-                }
-            } else {
-                for form in &all_forms {
-                    for pv in polytonic_variants(form) {
-                        if seen_poly.insert(pv.clone()) {
-                            polytonic_forms.push(pv);
-                        }
+        let dilemma_has_poly = self.dilemma.map(|d| d.has_polytonic_ranked()).unwrap_or(false);
+        if dilemma_has_poly {
+            let dilemma = self.dilemma.unwrap();
+            for form in &all_forms {
+                for pv in dilemma.get_polytonic_variants(form) {
+                    if seen_poly.insert(pv.clone()) {
+                        polytonic.push((pv.clone(), form.clone()));
                     }
                 }
             }
-            polytonic_forms.truncate(MAX_POLYTONIC);
-            all_variations.extend(polytonic_forms);
+        } else {
+            for form in &all_forms {
+                for pv in polytonic_variants(form) {
+                    if seen_poly.insert(pv.clone()) {
+                        polytonic.push((pv, form.clone()));
+                    }
+                }
+            }
         }
+        polytonic.truncate(max_polytonic);
 
-        all_variations
+        EntryForms { inflections, polytonic }
     }
 
     /// Structured, HTML-free view of every headword for non-HTML exporters,
@@ -825,7 +880,7 @@ impl<'a> HtmlGenerator<'a> {
         pos_display.to_string()
     }
 
-    fn get_head_info_for_pos(&self, pos_entries: &[&Entry], word: &str) -> Option<String> {
+    pub(crate) fn get_head_info_for_pos(&self, pos_entries: &[&Entry], word: &str) -> Option<String> {
         for e in pos_entries {
             if let Some(head_exp) = &e.head_expansion {
                 let stripped = strip_head_expansion(head_exp, word);
@@ -1276,7 +1331,7 @@ fn bucket_label(bucket: u8) -> &'static str {
     }
 }
 
-fn normalize_for_sorting(word: &str) -> String {
+pub(crate) fn normalize_for_sorting(word: &str) -> String {
     // lowercase (Greek final-sigma aware), strip accents, remove non Greek/Latin/digit
     let lower = crate::entry_processor::py_lower(word);
     let stripped: String = lower.chars().map(|c| match c {
@@ -1327,7 +1382,7 @@ fn gender_word_re(ab: &str) -> &'static Regex {
     }
 }
 
-fn def_has_tag(definition: &str, tag: &str) -> bool {
+pub(crate) fn def_has_tag(definition: &str, tag: &str) -> bool {
     match re_paren_prefix().captures(definition) {
         Some(c) => {
             let group = c.get(1).unwrap().as_str();
@@ -1337,7 +1392,7 @@ fn def_has_tag(definition: &str, tag: &str) -> bool {
     }
 }
 
-fn strip_def_qualifiers(definition: &str) -> String {
+pub(crate) fn strip_def_qualifiers(definition: &str) -> String {
     let stripped = strip_transliterations(definition);
     match re_paren_prefix_ws().captures(&stripped) {
         None => stripped,
@@ -1357,12 +1412,12 @@ fn strip_def_qualifiers(definition: &str) -> String {
     }
 }
 
-fn strip_transliterations(text: &str) -> String {
+pub(crate) fn strip_transliterations(text: &str) -> String {
     let t1 = re_strip_translit_a().replace_all(text, "").into_owned();
     re_strip_translit_b().replace_all(&t1, "").into_owned()
 }
 
-fn clean_etymology(text: &str) -> String {
+pub(crate) fn clean_etymology(text: &str) -> String {
     let mut out = text.to_string();
     for marker in &["Typological comparisons", "See also", "\n*", "\n•"] {
         if let Some(pos) = out.find(marker) {

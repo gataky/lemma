@@ -8,6 +8,10 @@ description = "Greek-English Kindle dictionary generator"
 name = "lemma"
 path = "src/main.rs"
 
+[[bin]]
+name = "lemma-sqlite"
+path = "src/bin/lemma_sqlite.rs"
+
 [lib]
 name = "lemma"
 path = "src/lib.rs"
@@ -25,8 +29,8 @@ quick-xml = "0.36"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 httpdate = "1"
 kindling = { version = "0.45.2", package = "kindling-mobi" }
-rusqlite = { version = "0.41.1", features = ["bundled"] }
-unicode-normalization = "0.1.26"
+rusqlite = { version = "0.32", features = ["bundled"] }
+unicode-normalization = "0.1"
 
 [profile.release]
 opt-level = 3

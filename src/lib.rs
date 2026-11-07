@@ -14,6 +14,6 @@ pub mod html_gen;
 pub mod lookup;
 pub mod mobi;
 pub mod mobi_validator;
-pub mod sqlite_export;
+pub mod sqlite;
 pub mod stardict;
 pub mod version;

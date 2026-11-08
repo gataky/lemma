@@ -9,16 +9,18 @@ Lemma used to build Kindle (MOBI/EPUB) and StarDict dictionaries. Those outputs 
 ### Prerequisites
 
 - Rust 1.85+ (edition 2024)
-- The data in a `lemma-data` directory next to this repo:
+- The data in a `lemma-data` directory next to this repo. `make data` downloads whatever is missing (about 1 GB):
   - `kaikki/en-el/kaikki.org-dictionary-Greek-words.jsonl` (Greek entries from English Wiktionary)
   - `kaikki/en/kaikki.org-dictionary-English.jsonl.gz` (English entries, for their translation tables)
-  - `dilemma/mg_lookup_scored.json` and `dilemma/mg_ranked_forms.json` (from [Dilemma](https://github.com/open-greek/dilemma))
+  - `dilemma/mg_lookup_scored.json` and `dilemma/mg_ranked_forms.json` (from the [Dilemma](https://github.com/open-greek/dilemma) dataset on HuggingFace)
+
+  To update a file, delete it and run `make data` again.
 
 ### Build the database
 
 ```bash
-make sqlite                                 # writes lemma_greek_en/lemma_greek_en.db
-make sqlite LEMMA_DATA=/path/to/lemma-data  # data somewhere else
+make data sqlite                                 # download missing data, then write lemma_greek_en/lemma_greek_en.db
+make data sqlite LEMMA_DATA=/path/to/lemma-data  # data somewhere else
 ```
 
 `make sqlite` stops if a data file is missing. Running `cargo run --release` directly also works without the data, but gives a smaller dictionary: fewer inflected forms, and an English index built from glosses alone.

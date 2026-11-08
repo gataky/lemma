@@ -50,11 +50,6 @@ fn strip_tags() -> &'static HashSet<&'static str> {
     })
 }
 
-pub(crate) fn greek_word_re() -> &'static Regex {
-    static R: OnceLock<Regex> = OnceLock::new();
-    R.get_or_init(|| Regex::new(r"([\u0370-\u03FF\u1F00-\u1FFF]+)").unwrap())
-}
-
 // Breathing maps: monotonic -> (smooth, rough)
 fn breathing() -> &'static HashMap<char, (char, char)> {
     static M: OnceLock<HashMap<char, (char, char)>> = OnceLock::new();
@@ -159,22 +154,6 @@ impl<'a> Dictionary<'a> {
     pub fn prepare(&mut self) {
         self.merge_form_of_into_parents();
         self.build_iform_owners();
-    }
-
-    /// The prepared headword -> entries map (valid after `prepare`).
-    pub(crate) fn entries(&self) -> &EntryMap {
-        &self.entries
-    }
-
-    /// The headword that owns a contested inflected form, if the form is
-    /// claimed by more than one headword.
-    pub(crate) fn iform_owner_of(&self, form: &str) -> Option<&str> {
-        self.iform_owner.get(form).map(|s| s.as_str())
-    }
-
-    /// Corpus frequency of a word (OpenSubtitles counts from data/el_full.txt).
-    pub(crate) fn frequency_of(&self, word: &str) -> i64 {
-        self.frequency.frequency(word)
     }
 
     fn merge_form_of_into_parents(&mut self) {
@@ -357,9 +336,7 @@ impl<'a> Dictionary<'a> {
     /// When `drop_contested` is true, inflections owned by another headword
     /// (see `build_iform_owners`) are removed before polytonic expansion, so
     /// each spelling belongs to one headword. The `form` table does this, a
-    /// rule inherited from the Kindle build. `lemma-sqlite` passes false and
-    /// records ownership instead, since a database can map one form to
-    /// several lemmas.
+    /// rule inherited from the Kindle build.
     pub(crate) fn entry_forms(
         &self,
         word: &str,

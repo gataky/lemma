@@ -32,8 +32,6 @@ A `greek_data_en.jsonl` in the repo root takes priority over `lemma-data`. Delet
 - `-i, --inflections N`: Max searchable inflected forms per headword (default: 255)
 - `-h, --help`: Show help message
 
-`lemma-sqlite` (`cargo run --release --bin lemma-sqlite`) writes the same dictionary in an older layout (schema 1, `lemma_greek_en.sqlite`) without the per-headword caps.
-
 ## The Database
 
 The database holds the processed dictionary (after form-of merging and inflection deduplication) as plain tables. For using the database from another project (schema details, how to compute the lookup keys, queries, and a tested Python reference implementation), see [docs/sqlite-database.md](docs/sqlite-database.md).

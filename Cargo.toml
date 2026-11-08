@@ -8,10 +8,6 @@ description = "Greek-English dictionary generator (SQLite)"
 name = "lemma"
 path = "src/main.rs"
 
-[[bin]]
-name = "lemma-sqlite"
-path = "src/bin/lemma_sqlite.rs"
-
 [lib]
 name = "lemma"
 path = "src/lib.rs"

@@ -10,6 +10,5 @@ pub mod generator;
 pub mod greek_keys;
 pub mod inflection;
 pub mod lookup;
-pub mod sqlite;
 pub mod sqlite_export;
 pub mod version;

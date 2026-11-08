@@ -133,7 +133,7 @@ headword 1──* entry 1──* sense
 | key | example |
 |---|---|
 | `schema_version` | `4` |
-| `lemma_version` | `1.3.5` |
+| `lemma_version` | `2.0.0` |
 | `source` | `English Wiktionary via kaikki.org` |
 | `source_lang` | `en` (the definitions are English) |
 | `build_date` | `20261105` (YYYYMMDD) |

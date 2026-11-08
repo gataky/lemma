@@ -107,7 +107,9 @@ CREATE TABLE sense (
 -- Every searchable spelling of a headword, the headword itself included,
 -- deduplicated per headword by norm (polytonic variants collapse onto their
 -- monotonic form). A spelling several headwords share is under each of them;
--- is_primary is 1 only under its main owner, which search ranks first.
+-- is_primary is 0 unless this headword is the norm's main owner (see
+-- Dictionary::build_iform_owners) or the row is its own spelling. Search
+-- ranks primary rows first.
 CREATE TABLE form (
     norm        TEXT NOT NULL,
     headword_id INTEGER NOT NULL REFERENCES headword(id),

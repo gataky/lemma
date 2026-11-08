@@ -10,9 +10,9 @@ It describes **schema version 4**. Check `meta.schema_version` before use.
 |---|---|
 | Greek headwords | 31,615 (33,131 part-of-speech entries, 46,174 senses) |
 | Inflection tables | 53,186, holding 489,351 labelled forms (verb conjugations, noun and adjective declensions, and more) |
-| Searchable Greek spellings | 366,316 (headwords plus every inflected form: είπα → λέω) |
+| Searchable Greek spellings | 357,690 (headwords plus every inflected form: είπα → λέω) |
 | English → Greek lookup terms | 88,894 (20,183 point at Greek words or phrases that have no full entry) |
-| File size | ~82 MB |
+| File size | ~81 MB |
 | Source | English Wiktionary via [kaikki.org](https://kaikki.org/) (Greek entries plus English entries' translation tables), inflections from [Dilemma](https://github.com/open-greek/dilemma), word frequencies from [FrequencyWords](https://github.com/hermitdave/FrequencyWords) (OpenSubtitles) |
 | Generator | [lemma](https://github.com/open-greek/lemma): `make sqlite` |
 
@@ -173,7 +173,12 @@ Every searchable spelling of every headword. **The headword itself is always inc
 - `form`: the stored spelling, with accents.
 - There is at most one row per (`norm`, headword). Polytonic spellings (ἄνθρωπος) share the `norm` of their monotonic form, so they are found, and `form` normally shows the monotonic spelling (fewer than 200 rows keep a polytonic one).
 - One `norm` can belong to several headwords (πόλη and Πόλη both have `norm` πολη), so a lookup can return several rows.
-- `is_primary`: `0` when this spelling belongs to several headwords and another one is its main owner. πήγα is a form of both πηγαίνω and πάω, and only πηγαίνω's row has `is_primary = 1`. The main owner is the canonical lemma when [Dilemma](https://github.com/open-greek/dilemma) lists one headword as a variant of the other, and otherwise the more frequent headword. Every other row, including each headword's own spelling, is `1`. Search ranks main owners first; see step 3 below.
+- `is_primary`: `0` when this row's `norm` is an inflected form of several headwords and another one is its main owner. πήγα is a form of both πηγαίνω and πάω, and only πηγαίνω's row has `is_primary = 1`. Each `norm` has one main owner among the headwords it is an inflected form of, chosen in this order:
+  1. a headword whose own Wiktionary inflection table lists that spelling (αργήσω belongs to the verb αργώ, not the ship Αργώ);
+  2. the canonical lemma, when [Dilemma](https://github.com/open-greek/dilemma) lists one headword as a variant of the other;
+  3. the more frequent headword.
+
+  A headword's own spelling is always `1`, so a `norm` can still have several primary rows when it is also a headword (πόλη and Πόλη, or είναι as a headword and as a form of είμαι). Every other row is `1`. Search ranks main owners first; see step 3 below.
 - Nothing is capped: a headword has all its inflected forms (verbs can have several hundred) and all their polytonic spellings.
 
 ### `en_index`
@@ -193,7 +198,7 @@ FTS5 full-text index over `sense.gloss` (external content, rowid = `sense.id`), 
 
 ## Lookup keys
 
-All of these must be computed in your app, on the user's input, exactly as below. The [Python reference](#python-reference-implementation) is the executable spec. It reproduces the stored `norm` and `phonetic` for all 366,316 `form` rows.
+All of these must be computed in your app, on the user's input, exactly as below. The [Python reference](#python-reference-implementation) is the executable spec. It reproduces the stored `norm` and `phonetic` for all 357,690 `form` rows.
 
 ### `norm`
 

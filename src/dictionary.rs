@@ -108,7 +108,7 @@ pub struct Dictionary<'a> {
     dilemma: Option<&'a DilemmaInflections>,
     frequency: FrequencyRanker,
     use_ranked_forms: bool,
-    /// Spelling -> its main owner, for spellings several headwords claim.
+    /// Search key (`norm`) -> its main owner, for keys several headwords claim.
     iform_owner: HashMap<String, String>,
 }
 
@@ -150,12 +150,16 @@ impl<'a> Dictionary<'a> {
     // πηγαίνω and πάω). The spelling stays under all of them; the owner's row
     // is marked primary so search ranks it first.
     fn build_iform_owners(&mut self) {
+        // Claims are grouped by search key (`norm`), not exact spelling, so
+        // αργήσω and its capitalized copy Αργήσω get the same owner: search
+        // matches them as one.
+        let norm = crate::greek_keys::norm;
         let mut all_claims: HashMap<String, Vec<String>> = HashMap::new();
 
         for (word, entries) in self.entries.iter() {
             for e in entries {
                 for inf in &e.inflections {
-                    let claims = all_claims.entry(inf.clone()).or_default();
+                    let claims = all_claims.entry(norm(inf)).or_default();
                     if !claims.contains(word) {
                         claims.push(word.clone());
                     }
@@ -165,7 +169,7 @@ impl<'a> Dictionary<'a> {
                 if let Some(dilemma) = self.dilemma {
                     if let Some(ranked) = dilemma.get_ranked_forms(word) {
                         for inf in ranked {
-                            let claims = all_claims.entry(inf.clone()).or_default();
+                            let claims = all_claims.entry(norm(inf)).or_default();
                             if !claims.contains(word) {
                                 claims.push(word.clone());
                             }
@@ -180,10 +184,35 @@ impl<'a> Dictionary<'a> {
             .map(|d| d.equivalences.clone())
             .unwrap_or_default();
 
+        // Spellings each headword's own Wiktionary tables list. Dilemma's data
+        // can file a verb's forms under the wrong lemma (αργήσω under the ship
+        // Αργώ, σώσω under σώνω and so onto σώσε), but Wiktionary lists
+        // αργήσω in αργώ's conjugation, so table listings decide first.
+        let in_own_tables: HashMap<&String, HashSet<String>> = self
+            .entries
+            .iter()
+            .map(|(word, entries)| {
+                let forms = entries
+                    .iter()
+                    .flat_map(|e| &e.tables)
+                    .filter(|t| t.word.is_none())
+                    .flat_map(|t| &t.forms)
+                    .map(|f| norm(&f.form))
+                    .collect();
+                (word, forms)
+            })
+            .collect();
+
         let mut iform_owner: HashMap<String, String> = HashMap::new();
         let mut contested = 0;
-        for (iform, headwords) in &all_claims {
-            if headwords.len() <= 1 { continue; }
+        for (key, claimants) in &all_claims {
+            if claimants.len() <= 1 { continue; }
+            let listed: Vec<String> = claimants
+                .iter()
+                .filter(|hw| in_own_tables.get(hw).is_some_and(|forms| forms.contains(key)))
+                .cloned()
+                .collect();
+            let headwords = if listed.is_empty() { claimants } else { &listed };
 
             // First preference: if one contestant is a variant of another
             // per dilemma's equivalences map, the canonical wins.
@@ -218,13 +247,9 @@ impl<'a> Dictionary<'a> {
 
             let Some(winner) = winner else { continue; };
             contested += 1;
-            for hw in headwords {
-                if hw != &winner {
-                    iform_owner.insert(iform.clone(), winner.clone());
-                }
-            }
+            iform_owner.insert(key.clone(), winner);
         }
-        println!("  {} spellings shared by several headwords (main owner: canonical form, then frequency)", contested);
+        println!("  {} spellings shared by several headwords (main owner: listed in its own table, then canonical form, then frequency)", contested);
         self.iform_owner = iform_owner;
     }
 
@@ -337,7 +362,8 @@ impl<'a> Dictionary<'a> {
             self.rank_inflections(&single_word)
         };
 
-        let is_primary = |form: &str| self.iform_owner.get(form).is_none_or(|owner| owner == word);
+        let is_primary =
+            |form: &str| self.iform_owner.get(&crate::greek_keys::norm(form)).is_none_or(|owner| owner == word);
         let mut variations: Vec<ExportForm> = inflections
             .iter()
             .map(|f| ExportForm { form: f.clone(), is_primary: is_primary(f) })
@@ -351,7 +377,8 @@ impl<'a> Dictionary<'a> {
             };
             for pv in variants {
                 if seen.insert(pv.clone()) {
-                    variations.push(ExportForm { form: pv, is_primary: form == word || is_primary(form) });
+                    let is_primary = form == word || is_primary(&pv);
+                    variations.push(ExportForm { form: pv, is_primary });
                 }
             }
         }

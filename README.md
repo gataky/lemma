@@ -1,6 +1,6 @@
 # Lemma: Modern Greek-English Dictionary Database
 
-A free Modern Greek-English dictionary as a single SQLite file, built from Wiktionary data for apps and ad-hoc queries. It has 31K headwords, 366K searchable spellings (accent-insensitive, by sound, or in Greeklish), English → Greek lookup, and 53K labelled inflection tables for drawing verb, noun and adjective paradigms. The generator and all helper tools are written in Rust.
+A free Modern Greek-English dictionary as a single SQLite file, built from Wiktionary data for apps and ad-hoc queries. It has 31K headwords, 358K searchable spellings (accent-insensitive, by sound, or in Greeklish), English → Greek lookup, and 53K labelled inflection tables for drawing verb, noun and adjective paradigms. The generator and all helper tools are written in Rust.
 
 Lemma used to build Kindle (MOBI/EPUB) and StarDict dictionaries. Those outputs have been removed; earlier releases on the [Releases page](https://github.com/open-greek/lemma/releases) still have them.
 
@@ -122,7 +122,7 @@ This cross-references the two data sources, uses corpus frequency as a tiebreake
 
 Every inflected form of a headword is searchable, ranked by corpus frequency when pre-ranked forms from Dilemma are available, together with its polytonic spellings: forms attested in Greek Wikisource (Dilemma's `mg_polytonic_ranked.json`). Polytonic lookup covers pre-1982 orthography and Katharevousa texts.
 
-A spelling that several headwords share is kept under each of them (λεπτά finds λεπτό and λεπτός). One of them is marked the main owner (`form.is_primary`) so search can rank it first: πήγα lists πηγαίνω before πάω.
+A spelling that several headwords share is kept under each of them (λεπτά finds λεπτό and λεπτός). One of them is marked the main owner (`form.is_primary`) so search can rank it first: πήγα lists πηγαίνω before πάω. The owner is a headword whose own Wiktionary table lists the form if there is one, then Dilemma's canonical lemma, then the more frequent word.
 
 ### Excluded Content
 

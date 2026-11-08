@@ -10,10 +10,10 @@ use crate::english_index;
 use crate::greek_keys;
 use crate::inflection::InflectionTable;
 use rusqlite::{Connection, params};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 /// Added to a term's gloss score when English Wiktionary's translation table
 /// also links the English word to the headword, so curated pairs outrank
@@ -35,12 +35,19 @@ pub struct ExportEntry {
     pub tables: Vec<InflectionTable>,
 }
 
+pub struct ExportForm {
+    pub form: String,
+    /// False when another headword is the main owner of this spelling
+    /// (πήγα is a form of πάω, but belongs to πηγαίνω first).
+    pub is_primary: bool,
+}
+
 pub struct ExportHeadword {
     pub word: String,
     pub frequency: i64,
     pub entries: Vec<ExportEntry>,
     /// Searchable inflected and polytonic forms, excluding the headword.
-    pub forms: Vec<String>,
+    pub forms: Vec<ExportForm>,
 }
 
 #[derive(Debug, Default)]
@@ -99,12 +106,14 @@ CREATE TABLE sense (
 );
 -- Every searchable spelling of a headword, the headword itself included,
 -- deduplicated per headword by norm (polytonic variants collapse onto their
--- monotonic form).
+-- monotonic form). A spelling several headwords share is under each of them;
+-- is_primary is 1 only under its main owner, which search ranks first.
 CREATE TABLE form (
     norm        TEXT NOT NULL,
     headword_id INTEGER NOT NULL REFERENCES headword(id),
     form        TEXT NOT NULL,
     phonetic    TEXT NOT NULL,
+    is_primary  INTEGER NOT NULL,
     PRIMARY KEY (norm, headword_id)
 ) WITHOUT ROWID;
 -- One inflection table of an entry, or (kind 'head') the forms on its headword
@@ -219,7 +228,7 @@ pub fn write_to(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         )?;
         let mut ins_form = tx.prepare(
-            "INSERT INTO form (norm, headword_id, form, phonetic) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO form (norm, headword_id, form, phonetic, is_primary) VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
         let mut ins_table = tx.prepare(
             "INSERT INTO inflection_table (id, entry_id, ord, kind, word, label, template, note)
@@ -294,13 +303,27 @@ pub fn write_to(
                 headword_by_spelling.insert(spelling, (headword_id, hw.frequency));
             }
 
-            let mut seen: HashSet<String> = HashSet::new();
-            for form in std::iter::once(&hw.word).chain(hw.forms.iter()) {
+            // One row per norm: the first spelling seen is stored, and the row
+            // is primary if any spelling with that norm is.
+            let mut rows: Vec<(String, &str, bool)> = Vec::new();
+            let mut row_of_norm: HashMap<String, usize> = HashMap::new();
+            let spellings = std::iter::once((hw.word.as_str(), true))
+                .chain(hw.forms.iter().map(|f| (f.form.as_str(), f.is_primary)));
+            for (form, is_primary) in spellings {
                 let norm = greek_keys::norm(form);
-                if norm.is_empty() || !seen.insert(norm.clone()) {
+                if norm.is_empty() {
                     continue;
                 }
-                ins_form.execute(params![norm, headword_id, form, greek_keys::phonetic(form)])?;
+                match row_of_norm.get(&norm) {
+                    Some(&i) => rows[i].2 |= is_primary,
+                    None => {
+                        row_of_norm.insert(norm.clone(), rows.len());
+                        rows.push((norm, form, is_primary));
+                    }
+                }
+            }
+            for (norm, form, is_primary) in rows {
+                ins_form.execute(params![norm, headword_id, form, greek_keys::phonetic(form), is_primary])?;
                 stats.forms += 1;
             }
         }
@@ -380,7 +403,10 @@ mod tests {
                         ],
                     }],
                 }],
-                forms: vec!["σπιτιού".to_string(), "σπίτια".to_string(), "σπιτιοῦ".to_string()],
+                forms: ["σπιτιού", "σπίτια", "σπιτιοῦ"]
+                    .iter()
+                    .map(|f| ExportForm { form: f.to_string(), is_primary: true })
+                    .collect(),
             },
             ExportHeadword {
                 word: "πόλη".to_string(),
@@ -481,6 +507,28 @@ mod tests {
         assert_eq!(stats.senses, 3);
         // σπίτι + σπιτιού + σπίτια (σπιτιοῦ collapses onto σπιτιού), πόλη, πολύ
         assert_eq!(stats.forms, 5);
+    }
+
+    #[test]
+    fn form_row_is_primary_if_any_spelling_with_its_norm_is() {
+        let hw = |forms: Vec<ExportForm>| ExportHeadword {
+            word: "πηγαίνω".to_string(),
+            frequency: 1,
+            entries: vec![],
+            forms,
+        };
+        let form = |f: &str, is_primary| ExportForm { form: f.to_string(), is_primary };
+        let mut conn = Connection::open_in_memory().unwrap();
+        write_to(&mut conn, &[hw(vec![form("πήγα", false), form("πῆγα", true), form("πήγες", false)])], &[], &[]).unwrap();
+        let rows: Vec<(String, bool)> = conn
+            .prepare("SELECT form, is_primary FROM form ORDER BY norm")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let expected = [("πήγα", true), ("πηγαίνω", true), ("πήγες", false)];
+        assert_eq!(rows, expected.map(|(f, p)| (f.to_string(), p)));
     }
 
     #[test]

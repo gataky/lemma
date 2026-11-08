@@ -7,14 +7,12 @@ use crate::dilemma::DilemmaInflections;
 use crate::entry_processor::{Entry, EntryMap};
 use crate::frequency::FrequencyRanker;
 use crate::inflection::{merge_tables, InflectionTable};
-use crate::sqlite_export::{ExportEntry, ExportHeadword, ExportSense};
+use crate::sqlite_export::{ExportEntry, ExportForm, ExportHeadword, ExportSense};
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-pub const MAX_INFLECTIONS: usize = 255;
-pub const MAX_POLYTONIC: usize = 255;
 
 fn pos_map() -> &'static HashMap<&'static str, &'static str> {
     static M: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
@@ -101,15 +99,6 @@ const DIPHTHONG_SECONDS: &str = "ιυίύΙΥΊΎ";
 pub struct BuildParams {
     pub source_lang: String,
     pub limit_percent: Option<f64>,
-    pub max_inflections: Option<usize>,
-}
-
-/// Searchable forms of one headword, as computed by `Dictionary::entry_forms`.
-pub(crate) struct EntryForms {
-    /// Ranked inflected forms, most frequent first.
-    pub inflections: Vec<String>,
-    /// (polytonic variant, monotonic form it was derived from).
-    pub polytonic: Vec<(String, String)>,
 }
 
 pub struct Dictionary<'a> {
@@ -119,6 +108,7 @@ pub struct Dictionary<'a> {
     dilemma: Option<&'a DilemmaInflections>,
     frequency: FrequencyRanker,
     use_ranked_forms: bool,
+    /// Spelling -> its main owner, for spellings several headwords claim.
     iform_owner: HashMap<String, String>,
 }
 
@@ -149,11 +139,93 @@ impl<'a> Dictionary<'a> {
         }
     }
 
-    /// Fold form-of entries into their parents and decide which headword owns
-    /// each contested inflected form. Must run before anything is exported.
+    /// Fold form-of entries into their parents and decide the main owner of
+    /// each shared spelling. Must run before anything is exported.
     pub fn prepare(&mut self) {
         self.merge_form_of_into_parents();
         self.build_iform_owners();
+    }
+
+    // Decide the main owner of each spelling several headwords claim (πήγα:
+    // πηγαίνω and πάω). The spelling stays under all of them; the owner's row
+    // is marked primary so search ranks it first.
+    fn build_iform_owners(&mut self) {
+        let mut all_claims: HashMap<String, Vec<String>> = HashMap::new();
+
+        for (word, entries) in self.entries.iter() {
+            for e in entries {
+                for inf in &e.inflections {
+                    let claims = all_claims.entry(inf.clone()).or_default();
+                    if !claims.contains(word) {
+                        claims.push(word.clone());
+                    }
+                }
+            }
+            if self.use_ranked_forms {
+                if let Some(dilemma) = self.dilemma {
+                    if let Some(ranked) = dilemma.get_ranked_forms(word) {
+                        for inf in ranked {
+                            let claims = all_claims.entry(inf.clone()).or_default();
+                            if !claims.contains(word) {
+                                claims.push(word.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let equiv_canonical: HashMap<String, String> = self
+            .dilemma
+            .map(|d| d.equivalences.clone())
+            .unwrap_or_default();
+
+        let mut iform_owner: HashMap<String, String> = HashMap::new();
+        let mut contested = 0;
+        for (iform, headwords) in &all_claims {
+            if headwords.len() <= 1 { continue; }
+
+            // First preference: if one contestant is a variant of another
+            // per dilemma's equivalences map, the canonical wins.
+            let mut winner: Option<String> = None;
+            for hw in headwords {
+                if let Some(canonical) = equiv_canonical.get(hw) {
+                    if headwords.contains(canonical) {
+                        winner = Some(canonical.clone());
+                        break;
+                    }
+                }
+            }
+
+            // Otherwise pick the highest-frequency headword. Alphabetical
+            // stable tiebreak keeps output deterministic when frequencies
+            // match (including the all-zero case).
+            if winner.is_none() {
+                let mut best: Option<(&String, i64)> = None;
+                for hw in headwords {
+                    let f = self.frequency.frequency(hw);
+                    match &best {
+                        None => best = Some((hw, f)),
+                        Some((bw, bf)) => {
+                            if f > *bf || (f == *bf && hw < *bw) {
+                                best = Some((hw, f));
+                            }
+                        }
+                    }
+                }
+                winner = best.map(|(w, _)| w.clone());
+            }
+
+            let Some(winner) = winner else { continue; };
+            contested += 1;
+            for hw in headwords {
+                if hw != &winner {
+                    iform_owner.insert(iform.clone(), winner.clone());
+                }
+            }
+        }
+        println!("  {} spellings shared by several headwords (main owner: canonical form, then frequency)", contested);
+        self.iform_owner = iform_owner;
     }
 
     fn merge_form_of_into_parents(&mut self) {
@@ -234,118 +306,12 @@ impl<'a> Dictionary<'a> {
         }
     }
 
-    fn build_iform_owners(&mut self) {
-        let mut all_claims: HashMap<String, Vec<String>> = HashMap::new();
-
-        for (word, entries) in self.entries.iter() {
-            for e in entries {
-                for inf in &e.inflections {
-                    let claims = all_claims.entry(inf.clone()).or_default();
-                    if !claims.contains(word) {
-                        claims.push(word.clone());
-                    }
-                }
-            }
-            if self.use_ranked_forms {
-                if let Some(dilemma) = self.dilemma {
-                    if let Some(ranked) = dilemma.get_ranked_forms(word) {
-                        for inf in ranked {
-                            let claims = all_claims.entry(inf.clone()).or_default();
-                            if !claims.contains(word) {
-                                claims.push(word.clone());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let equiv_canonical: HashMap<String, String> = self
-            .dilemma
-            .map(|d| d.equivalences.clone())
-            .unwrap_or_default();
-
-        let mut iform_owner: HashMap<String, String> = HashMap::new();
-        let mut contested = 0;
-        for (iform, headwords) in &all_claims {
-            if headwords.len() <= 1 { continue; }
-
-            // First preference: if one contestant is a variant of another
-            // per dilemma's equivalences map, the canonical wins.
-            let mut winner: Option<String> = None;
-            for hw in headwords {
-                if let Some(canonical) = equiv_canonical.get(hw) {
-                    if headwords.contains(canonical) {
-                        winner = Some(canonical.clone());
-                        break;
-                    }
-                }
-            }
-
-            // Otherwise pick the highest-frequency headword. Alphabetical
-            // stable tiebreak keeps output deterministic when frequencies
-            // match (including the all-zero case).
-            if winner.is_none() {
-                let mut best: Option<(&String, i64)> = None;
-                for hw in headwords {
-                    let f = self.frequency.frequency(hw);
-                    match &best {
-                        None => best = Some((hw, f)),
-                        Some((bw, bf)) => {
-                            if f > *bf || (f == *bf && hw < *bw) {
-                                best = Some((hw, f));
-                            }
-                        }
-                    }
-                }
-                winner = best.map(|(w, _)| w.clone());
-            }
-
-            let Some(winner) = winner else { continue; };
-            contested += 1;
-            for hw in headwords {
-                if hw != &winner {
-                    iform_owner.insert(iform.clone(), winner.clone());
-                }
-            }
-        }
-        println!("  Deduplicated {} contested iforms (canonical form + highest-frequency tiebreak)", contested);
-        self.iform_owner = iform_owner;
-    }
-
-    /// Compute the full ordered set of searchable inflected forms for a
-    /// headword: ranked single-word inflections (capped at max_inflections),
-    /// de-duplicated against iforms owned by a higher-frequency headword, then
-    /// extended with polytonic variants. This is exactly the set emitted as
-    /// `<idx:iform>` by the idx path and as `<match>` entries by the EPUB3 SKM,
-    /// keeping the two outputs in agreement.
-    fn entry_variations(&self, word: &str, entries: &[Entry]) -> Vec<String> {
-        let max_inflections = self.params.max_inflections.unwrap_or(MAX_INFLECTIONS);
-        let forms = self.entry_forms(word, entries, max_inflections, MAX_POLYTONIC, true);
-        let mut all_variations = forms.inflections;
-        all_variations.extend(forms.polytonic.into_iter().map(|(variant, _source)| variant));
-        all_variations
-    }
-
-    /// The searchable forms of a headword, split by kind. Inflections come
-    /// back ranked (most frequent first) and capped at `max_inflections`;
-    /// polytonic variants are paired with the monotonic form they were
-    /// derived from (the headword itself or one of the inflections) and
-    /// capped at `max_polytonic`.
-    ///
-    /// When `drop_contested` is true, inflections owned by another headword
-    /// (see `build_iform_owners`) are removed before polytonic expansion, so
-    /// each spelling belongs to one headword. The `form` table does this, a
-    /// rule inherited from the Kindle build.
-    pub(crate) fn entry_forms(
-        &self,
-        word: &str,
-        entries: &[Entry],
-        max_inflections: usize,
-        max_polytonic: usize,
-        drop_contested: bool,
-    ) -> EntryForms {
-        // Combine all inflections from all entries
+    /// Every searchable spelling of a headword except the headword itself:
+    /// its inflected forms, most frequent first, then the polytonic variants
+    /// of the headword and of each form. A spelling several headwords share
+    /// (λεπτά: λεπτό and λεπτός) is kept under each of them, marked primary
+    /// only under its main owner. A polytonic variant follows its source.
+    fn entry_variations(&self, word: &str, entries: &[Entry]) -> Vec<ExportForm> {
         let mut all_inflections: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for e in entries {
@@ -363,56 +329,37 @@ impl<'a> Dictionary<'a> {
             lower.contains("proper") || lower.contains("name")
         });
 
-        let mut inflections: Vec<String> = if is_proper_noun {
-            single_word.into_iter().take(max_inflections).collect()
+        let inflections: Vec<String> = if is_proper_noun {
+            single_word
         } else if self.use_ranked_forms {
-            self.select_ranked_inflections(word, &single_word, max_inflections)
+            self.select_ranked_inflections(word, &single_word)
         } else {
-            let ranked = self.rank_inflections(&single_word);
-            ranked.into_iter().take(max_inflections).collect()
+            self.rank_inflections(&single_word)
         };
 
-        // Remove iforms owned by a higher-frequency headword
-        if drop_contested {
-            inflections.retain(|inf| {
-                self.iform_owner.get(inf).map(|w| w.as_str() == word).unwrap_or(true)
-            });
-        }
-
-        // Polytonic expansion (always enabled in the unified edition).
-        let mut all_forms: Vec<String> = Vec::with_capacity(inflections.len() + 1);
-        all_forms.push(word.to_string());
-        all_forms.extend(inflections.iter().cloned());
-        let mut polytonic: Vec<(String, String)> = Vec::new();
-        let mut seen_poly: HashSet<String> = all_forms.iter().cloned().collect();
-
-        let dilemma_has_poly = self.dilemma.map(|d| d.has_polytonic_ranked()).unwrap_or(false);
-        if dilemma_has_poly {
-            let dilemma = self.dilemma.unwrap();
-            for form in &all_forms {
-                for pv in dilemma.get_polytonic_variants(form) {
-                    if seen_poly.insert(pv.clone()) {
-                        polytonic.push((pv.clone(), form.clone()));
-                    }
-                }
-            }
-        } else {
-            for form in &all_forms {
-                for pv in polytonic_variants(form) {
-                    if seen_poly.insert(pv.clone()) {
-                        polytonic.push((pv, form.clone()));
-                    }
+        let is_primary = |form: &str| self.iform_owner.get(form).is_none_or(|owner| owner == word);
+        let mut variations: Vec<ExportForm> = inflections
+            .iter()
+            .map(|f| ExportForm { form: f.clone(), is_primary: is_primary(f) })
+            .collect();
+        let mut seen: HashSet<String> = std::iter::once(word.to_string()).chain(inflections.iter().cloned()).collect();
+        let dilemma_poly = self.dilemma.filter(|d| d.has_polytonic_ranked());
+        for form in std::iter::once(word).chain(inflections.iter().map(String::as_str)) {
+            let variants = match dilemma_poly {
+                Some(d) => d.get_polytonic_variants(form).to_vec(),
+                None => polytonic_variants(form),
+            };
+            for pv in variants {
+                if seen.insert(pv.clone()) {
+                    variations.push(ExportForm { form: pv, is_primary: form == word || is_primary(form) });
                 }
             }
         }
-        polytonic.truncate(max_polytonic);
-
-        EntryForms { inflections, polytonic }
+        variations
     }
 
     /// Every headword in dictionary sort order, ready for the SQLite export.
-    /// Reflects form-of merging and contested-iform ownership, so it must be
-    /// called after `prepare`.
+    /// Reflects form-of merging, so it must be called after `prepare`.
     pub fn export_headwords(&self) -> Vec<ExportHeadword> {
         let mut sorted_keys: Vec<&String> = self.entries.keys().collect();
         sorted_keys.sort_by_cached_key(|k| normalize_for_sorting(k));
@@ -520,11 +467,11 @@ impl<'a> Dictionary<'a> {
         result
     }
 
-    fn select_ranked_inflections(&self, headword: &str, entry_inflections: &[String], max_count: usize) -> Vec<String> {
+    fn select_ranked_inflections(&self, headword: &str, entry_inflections: &[String]) -> Vec<String> {
         if entry_inflections.is_empty() { return Vec::new(); }
-        let Some(dilemma) = self.dilemma else { return entry_inflections.iter().take(max_count).cloned().collect(); };
+        let Some(dilemma) = self.dilemma else { return entry_inflections.to_vec(); };
         let Some(ranked) = dilemma.get_ranked_forms(headword) else {
-            return entry_inflections.iter().take(max_count).cloned().collect();
+            return entry_inflections.to_vec();
         };
 
         let ranked_lower: HashSet<String> = ranked.iter().map(|f| crate::entry_processor::py_lower(f)).collect();
@@ -545,9 +492,7 @@ impl<'a> Dictionary<'a> {
                 result.push(form.clone());
                 result_lower.insert(low);
             }
-            if result.len() >= max_count { break; }
         }
-        result.truncate(max_count);
         result
     }
 

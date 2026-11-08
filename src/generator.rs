@@ -13,7 +13,6 @@ use chrono::Local;
 pub struct GeneratorOptions {
     pub source_lang: String,
     pub limit_percent: Option<f64>,
-    pub max_inflections: Option<usize>,
 }
 
 pub fn run(opts: GeneratorOptions) -> Result<(), Box<dyn std::error::Error>> {
@@ -46,7 +45,6 @@ pub fn run(opts: GeneratorOptions) -> Result<(), Box<dyn std::error::Error>> {
     let params = BuildParams {
         source_lang: opts.source_lang.clone(),
         limit_percent: opts.limit_percent,
-        max_inflections: opts.max_inflections,
     };
     let mut dictionary = Dictionary::new(entries, params, Some(&dilemma));
     println!("Preparing entries...");

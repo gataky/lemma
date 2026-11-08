@@ -13,10 +13,6 @@ struct Cli {
     /// Limit to first PERCENT% of words (for testing).
     #[arg(short = 'l', long = "limit")]
     limit: Option<f64>,
-
-    /// Max searchable inflected forms per headword. Default: 255
-    #[arg(short = 'i', long = "inflections")]
-    inflections: Option<usize>,
 }
 
 fn main() {
@@ -37,7 +33,6 @@ fn main() {
     let opts = GeneratorOptions {
         source_lang: cli.source,
         limit_percent: cli.limit,
-        max_inflections: cli.inflections,
     };
 
     if let Err(e) = generator::run(opts) {

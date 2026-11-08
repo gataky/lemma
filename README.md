@@ -1,6 +1,6 @@
 # Lemma: Modern Greek-English Dictionary Database
 
-A free Modern Greek-English dictionary as a single SQLite file, built from Wiktionary data for apps and ad-hoc queries. It has 31K headwords, 318K searchable spellings (accent-insensitive, by sound, or in Greeklish), English → Greek lookup, and 53K labelled inflection tables for drawing verb, noun and adjective paradigms. The generator and all helper tools are written in Rust.
+A free Modern Greek-English dictionary as a single SQLite file, built from Wiktionary data for apps and ad-hoc queries. It has 31K headwords, 366K searchable spellings (accent-insensitive, by sound, or in Greeklish), English → Greek lookup, and 53K labelled inflection tables for drawing verb, noun and adjective paradigms. The generator and all helper tools are written in Rust.
 
 Lemma used to build Kindle (MOBI/EPUB) and StarDict dictionaries. Those outputs have been removed; earlier releases on the [Releases page](https://github.com/open-greek/lemma/releases) still have them.
 
@@ -29,7 +29,6 @@ A `greek_data_en.jsonl` in the repo root takes priority over `lemma-data`. Delet
 
 - `-l, --limit PERCENT`: Limit to the first X% of words (for testing). Writes to `lemma_greek_en_<X>pct/`
 - `-s, --source en|el`: English (default) or Greek Wiktionary
-- `-i, --inflections N`: Max searchable inflected forms per headword (default: 255)
 - `-h, --help`: Show help message
 
 ## The Database
@@ -121,13 +120,11 @@ This cross-references the two data sources, uses corpus frequency as a tiebreake
 - **Searchable forms**: inflected forms redirect to their lemma (είπα → λέω), with monotonic and polytonic spellings
 - **Inflection tables**: every labelled form, for conjugation and declension tables
 
-### Inflection Limit
+### Searchable Forms
 
-Each headword's searchable forms in the `form` table include up to 255 unique inflected forms (`MAX_INFLECTIONS` in `src/dictionary.rs`), ranked by corpus frequency when pre-ranked forms from Dilemma are available. Use `-i N` to adjust. The inflection tables are not capped.
+Every inflected form of a headword is searchable, ranked by corpus frequency when pre-ranked forms from Dilemma are available, together with its polytonic spellings: forms attested in Greek Wikisource (Dilemma's `mg_polytonic_ranked.json`). Polytonic lookup covers pre-1982 orthography and Katharevousa texts.
 
-Each headword also carries up to 255 polytonic variants (`MAX_POLYTONIC`), sourced from attested forms in Greek Wikisource via Dilemma's `mg_polytonic_ranked.json`. This enables lookups in polytonic Modern Greek texts (pre-1982 orthography, Katharevousa literature, etc.).
-
-Both caps, and giving each searchable spelling to a single headword, were Kindle requirements that the database still follows.
+A spelling that several headwords share is kept under each of them (λεπτά finds λεπτό and λεπτός). One of them is marked the main owner (`form.is_primary`) so search can rank it first: πήγα lists πηγαίνω before πάω.
 
 ### Excluded Content
 

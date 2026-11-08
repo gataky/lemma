@@ -2,7 +2,7 @@
 
 This guide is for developers and coding agents building on `lemma_greek_en.db`, a Modern Greek ↔ English dictionary in a single read-only SQLite file. It covers the schema, the lookup keys your code must compute, ready-to-use queries, and a tested Python reference implementation.
 
-It describes **schema version 3**. Check `meta.schema_version` before use.
+It describes **schema version 4**. Check `meta.schema_version` before use.
 
 ## At a glance
 
@@ -10,9 +10,9 @@ It describes **schema version 3**. Check `meta.schema_version` before use.
 |---|---|
 | Greek headwords | 31,615 (33,131 part-of-speech entries, 46,174 senses) |
 | Inflection tables | 53,186, holding 489,351 labelled forms (verb conjugations, noun and adjective declensions, and more) |
-| Searchable Greek spellings | 317,756 (headwords plus inflected forms: είπα → λέω) |
+| Searchable Greek spellings | 366,316 (headwords plus every inflected form: είπα → λέω) |
 | English → Greek lookup terms | 88,894 (20,183 point at Greek words or phrases that have no full entry) |
-| File size | ~76 MB |
+| File size | ~82 MB |
 | Source | English Wiktionary via [kaikki.org](https://kaikki.org/) (Greek entries plus English entries' translation tables), inflections from [Dilemma](https://github.com/open-greek/dilemma), word frequencies from [FrequencyWords](https://github.com/hermitdave/FrequencyWords) (OpenSubtitles) |
 | Generator | [lemma](https://github.com/open-greek/lemma): `make sqlite` |
 
@@ -31,7 +31,7 @@ What it is good for:
 1. **Open it read-only** (`file:…?mode=ro`). The database is a build artifact. Never write to it. Keep app data (favourites, history) in your own database.
 2. **Do not persist row ids across database versions.** Every build renumbers `headword.id`, `entry.id` and `sense.id`. To remember a word, store `headword.word` (plus `entry.pos` if you need the part of speech) and look it up again.
 3. **Your code must compute the lookup keys.** SQL cannot. `form.norm`, `form.phonetic` and `en_index.term` hold keys made by the functions in [Lookup keys](#lookup-keys). Run the same function on the user's input before querying. Use the [Python reference](#python-reference-implementation) as-is, or port it and check your port against its [test vectors](#verifying-a-port).
-4. **Check `meta.schema_version` = `'3'`** when opening. A different value means the schema changed, so re-read this guide for that version.
+4. **Check `meta.schema_version` = `'4'`** when opening. A different value means the schema changed, so re-read this guide for that version.
 
 ## Schema
 
@@ -68,6 +68,7 @@ CREATE TABLE form (
     headword_id INTEGER NOT NULL REFERENCES headword(id),
     form        TEXT NOT NULL,
     phonetic    TEXT NOT NULL,
+    is_primary  INTEGER NOT NULL,
     PRIMARY KEY (norm, headword_id)
 ) WITHOUT ROWID;
 CREATE TABLE inflection_table (
@@ -131,7 +132,7 @@ headword 1──* entry 1──* sense
 
 | key | example |
 |---|---|
-| `schema_version` | `3` |
+| `schema_version` | `4` |
 | `lemma_version` | `1.3.5` |
 | `source` | `English Wiktionary via kaikki.org` |
 | `source_lang` | `en` (the definitions are English) |
@@ -172,6 +173,8 @@ Every searchable spelling of every headword. **The headword itself is always inc
 - `form`: the stored spelling, with accents.
 - There is at most one row per (`norm`, headword). Polytonic spellings (ἄνθρωπος) share the `norm` of their monotonic form, so they are found, and `form` normally shows the monotonic spelling (fewer than 200 rows keep a polytonic one).
 - One `norm` can belong to several headwords (πόλη and Πόλη both have `norm` πολη), so a lookup can return several rows.
+- `is_primary`: `0` when this spelling belongs to several headwords and another one is its main owner. πήγα is a form of both πηγαίνω and πάω, and only πηγαίνω's row has `is_primary = 1`. The main owner is the canonical lemma when [Dilemma](https://github.com/open-greek/dilemma) lists one headword as a variant of the other, and otherwise the more frequent headword. Every other row, including each headword's own spelling, is `1`. Search ranks main owners first; see step 3 below.
+- Nothing is capped: a headword has all its inflected forms (verbs can have several hundred) and all their polytonic spellings.
 
 ### `en_index`
 
@@ -190,7 +193,7 @@ FTS5 full-text index over `sense.gloss` (external content, rowid = `sense.id`), 
 
 ## Lookup keys
 
-All of these must be computed in your app, on the user's input, exactly as below. The [Python reference](#python-reference-implementation) is the executable spec. It reproduces the stored `norm` and `phonetic` for all 317,756 `form` rows.
+All of these must be computed in your app, on the user's input, exactly as below. The [Python reference](#python-reference-implementation) is the executable spec. It reproduces the stored `norm` and `phonetic` for all 366,316 `form` rows.
 
 ### `norm`
 
@@ -249,7 +252,7 @@ This is `search_greek` in the reference code.
 
 1. **If the input contains Greek letters**, query by `norm`:
    ```sql
-   SELECT f.headword_id, f.form, h.word, h.frequency
+   SELECT f.headword_id, f.form, h.word, h.frequency, f.phonetic, f.is_primary
    FROM form f JOIN headword h ON h.id = f.headword_id
    WHERE f.norm = :norm
    ORDER BY f.form = h.word DESC;   -- the headword's own spelling first
@@ -257,14 +260,14 @@ This is `search_greek` in the reference code.
    A row is an **exact** match if `f.form` equals the trimmed input. Otherwise it's a **norm** match.
 2. **Always**, query by sound with every key from `query_keys`:
    ```sql
-   SELECT f.headword_id, f.form, h.word, h.frequency, f.phonetic
+   SELECT f.headword_id, f.form, h.word, h.frequency, f.phonetic, f.is_primary
    FROM form f JOIN headword h ON h.id = f.headword_id
    WHERE f.phonetic IN (:k1, :k2, …)
    ORDER BY f.form = h.word DESC;
    ```
    These are **phonetic** matches. Their penalty is the penalty of the key that matched (`f.phonetic`).
-3. Keep **one hit per headword**, the best by (kind, penalty) with exact < norm < phonetic. On a tie, keep the first row seen.
-4. Sort by kind, then penalty, then `frequency` descending, then `word`.
+3. Keep **one hit per headword**, the best by (kind, penalty, not `is_primary`) with exact < norm < phonetic. On a tie, keep the first row seen.
+4. Sort by kind, then penalty, then `is_primary` descending, then `frequency` descending, then `word`. Without `is_primary`, `πήγα` would list πάω first, since it is the more frequent word.
 
 Show `matched_form` when it differs from `word` (`λέω ← είπα`), and label phonetic hits as spelling suggestions ("did you mean").
 
@@ -542,7 +545,7 @@ search_english(conn, "bank")[:2]              # τράπεζα [institution], ό
 ```
 
 ```python
-"""Reference lookup for the lemma SQLite dictionary (schema_version 3).
+"""Reference lookup for the lemma SQLite dictionary (schema_version 4).
 
 Port of lemma's src/greek_keys.rs, src/english_index.rs and src/lookup.rs.
 Standard library only.
@@ -743,7 +746,7 @@ def normalize_term(s):
 EXACT, NORM, PHONETIC = 0, 1, 2
 
 _SELECT_FORMS = """
-    SELECT f.headword_id, f.form, h.word, h.frequency, f.phonetic
+    SELECT f.headword_id, f.form, h.word, h.frequency, f.phonetic, f.is_primary
     FROM form f JOIN headword h ON h.id = f.headword_id"""
 _PREFER_HEADWORD = " ORDER BY f.form = h.word DESC"
 
@@ -752,19 +755,23 @@ def search_greek(conn, query, limit=10):
     """Greek or Greeklish query -> [dict], best first.
 
     Each hit: headword_id, word, matched_form, kind (EXACT/NORM/PHONETIC),
-    penalty, frequency.
+    penalty, is_primary, frequency.
     """
     query = query.strip()
     best = {}
 
+    def rank(h):
+        return (h["kind"], h["penalty"], not h["is_primary"])
+
     def keep(hit):
         cur = best.get(hit["headword_id"])
-        if cur is None or (hit["kind"], hit["penalty"]) < (cur["kind"], cur["penalty"]):
+        if cur is None or rank(hit) < rank(cur):
             best[hit["headword_id"]] = hit
 
     def hit(row, kind, penalty):
         return {"headword_id": row[0], "matched_form": row[1], "word": row[2],
-                "frequency": row[3], "kind": kind, "penalty": penalty}
+                "frequency": row[3], "kind": kind, "penalty": penalty,
+                "is_primary": bool(row[5])}
 
     if is_greek(query):
         sql = _SELECT_FORMS + " WHERE f.norm = ?" + _PREFER_HEADWORD
@@ -778,7 +785,7 @@ def search_greek(conn, query, limit=10):
         for row in conn.execute(sql, list(keys)):
             keep(hit(row, PHONETIC, keys[row[4]]))
 
-    hits = sorted(best.values(), key=lambda h: (h["kind"], h["penalty"], -h["frequency"], h["word"]))
+    hits = sorted(best.values(), key=lambda h: (*rank(h), -h["frequency"], h["word"]))
     return hits[:limit]
 
 
@@ -857,8 +864,8 @@ def entries(conn, headword_id):
 def open_dictionary(path):
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     (version,) = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
-    if version != "3":
-        raise RuntimeError(f"expected schema_version 3, got {version}")
+    if version != "4":
+        raise RuntimeError(f"expected schema_version 4, got {version}")
     return conn
 ```
 

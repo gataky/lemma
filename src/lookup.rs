@@ -4,8 +4,9 @@
 // (`norm`), then by sound (`phonetic`); a Latin query is treated as
 // Greeklish and matched by sound only. Results are grouped by headword,
 // keeping each headword's best match, and ranked by match quality, then the
-// Greeklish reading penalty (x read as χ beats x read as ξ), then corpus
-// frequency.
+// Greeklish reading penalty (x read as χ beats x read as ξ), then whether the
+// headword is the main owner of the matched spelling (πήγα: πηγαίνω before
+// πάω), then corpus frequency.
 //
 // English queries go through `en_index` (glosses plus English Wiktionary
 // translation tables), falling back to full-text search over glosses.
@@ -33,12 +34,14 @@ pub struct Hit {
     /// Greeklish reading penalty of the key that matched (see
     /// `greek_keys::query_keys`); 0 for Greek queries.
     pub penalty: u8,
+    /// False when another headword is the main owner of `matched_form`.
+    pub is_primary: bool,
     pub frequency: i64,
 }
 
 impl Hit {
-    fn rank(&self) -> (MatchKind, u8) {
-        (self.kind, self.penalty)
+    fn rank(&self) -> (MatchKind, u8, bool) {
+        (self.kind, self.penalty, !self.is_primary)
     }
 }
 
@@ -68,7 +71,7 @@ pub struct EntryView {
 // Within one headword, rows for the headword's own spelling sort first so it
 // is preferred as `matched_form` over an inflection with the same key.
 const SELECT_FORMS: &str = "
-    SELECT f.headword_id, f.form, h.word, h.frequency, f.phonetic
+    SELECT f.headword_id, f.form, h.word, h.frequency, f.phonetic, f.is_primary
     FROM form f JOIN headword h ON h.id = f.headword_id";
 const PREFER_HEADWORD: &str = " ORDER BY f.form = h.word DESC";
 
@@ -120,6 +123,7 @@ fn row_to_hit(r: &rusqlite::Row, kind: MatchKind, penalty: u8) -> rusqlite::Resu
         matched_form: r.get(1)?,
         word: r.get(2)?,
         frequency: r.get(3)?,
+        is_primary: r.get(5)?,
         kind,
         penalty,
     })
@@ -251,7 +255,7 @@ pub fn entries(conn: &Connection, headword_id: i64) -> rusqlite::Result<Vec<Entr
 mod tests {
     use super::*;
     use crate::en_translations::EnTranslation;
-    use crate::sqlite_export::{self, ExportEntry, ExportHeadword, ExportSense};
+    use crate::sqlite_export::{self, ExportEntry, ExportForm, ExportHeadword, ExportSense};
 
     fn headword(word: &str, frequency: i64, gloss: &str, forms: &[&str]) -> ExportHeadword {
         ExportHeadword {
@@ -265,7 +269,7 @@ mod tests {
                 senses: vec![ExportSense { gloss: gloss.to_string(), example: None, example_translation: None }],
                 tables: vec![],
             }],
-            forms: forms.iter().map(|f| f.to_string()).collect(),
+            forms: forms.iter().map(|f| ExportForm { form: f.to_string(), is_primary: true }).collect(),
         }
     }
 
@@ -315,6 +319,17 @@ mod tests {
     fn top(conn: &Connection, q: &str) -> (String, String, MatchKind) {
         let h = search(conn, q, 5).unwrap().into_iter().next().expect("no hit");
         (h.word, h.matched_form, h.kind)
+    }
+
+    #[test]
+    fn shared_spelling_finds_every_headword_main_owner_first() {
+        let mut πάω = headword("πάω", 9000, "to go", &[]);
+        πάω.forms.push(ExportForm { form: "πήγα".into(), is_primary: false });
+        let πηγαίνω = headword("πηγαίνω", 100, "to go", &["πήγα"]);
+        let mut conn = Connection::open_in_memory().unwrap();
+        sqlite_export::write_to(&mut conn, &[πάω, πηγαίνω], &[], &[]).unwrap();
+        let words: Vec<String> = search(&conn, "πήγα", 5).unwrap().into_iter().map(|h| h.word).collect();
+        assert_eq!(words, ["πηγαίνω", "πάω"]);
     }
 
     #[test]

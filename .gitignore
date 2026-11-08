@@ -5,10 +5,10 @@ lemma_greek_*/
 
 # Downloaded data files. Lemma redownloads from Kaikki on each run, so we
 # never need to track the dump in git. There is no committed fallback file.
-# *.jsonl
+*.jsonl
 
 # Sidecar metadata written next to downloaded Kaikki dumps
-# *.jsonl.meta
+*.jsonl.meta
 
 # Processed entries cache files
 processed_entries_*.json

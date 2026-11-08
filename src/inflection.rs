@@ -1,10 +1,10 @@
 // Keeps Wiktionary's inflection tables with their grammatical labels.
 //
-// `collect_inflections_from` flattens a kaikki entry's `forms` into searchable
-// spellings for the Kindle lookup index, which drops the tags and anything with
-// a space (θα γράψω). This module reads the same `forms` for the SQLite export,
-// keeping every cell's tags and which table it came from, so a consumer can lay
-// out a conjugation or declension.
+// `collect_inflections_from` flattens a kaikki entry's `forms` into the
+// searchable spellings of the `form` table, which drops the tags and anything
+// with a space (θα γράψω). This module reads the same `forms` for the
+// inflection tables, keeping every cell's tags and which table it came from,
+// so a consumer can lay out a conjugation or declension.
 //
 // Cell text is stored as Wiktionary has it, typos and all. Three things are not
 // cells and are handled here: table markers (`table-tags`,

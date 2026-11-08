@@ -1,7 +1,7 @@
 // Writes the dictionary as a SQLite database for apps and ad-hoc queries.
 //
-// The HTML generator stays the source of truth for which forms belong to
-// which headword (form-of merging, contested-iform ownership, ranking); it
+// `Dictionary` (src/dictionary.rs) decides which forms belong to which
+// headword (form-of merging, contested-iform ownership, ranking); it
 // hands over plain `ExportHeadword`s and this module only stores them, adding
 // the `greek_keys` lookup columns and the English->Greek `en_index`.
 

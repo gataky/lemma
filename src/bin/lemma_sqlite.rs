@@ -1,4 +1,5 @@
-// Build the Lemma Greek dictionary as a SQLite database (no Kindle output).
+// Build the Lemma Greek dictionary as a SQLite database in the older schema 1
+// layout. `lemma` itself writes the schema 3 database apps use.
 //
 // Runs the same download -> parse -> Dilemma merge -> form-of folding ->
 // inflection ranking pipeline as the `lemma` binary, then writes
@@ -16,7 +17,7 @@ use clap::Parser;
 use lemma::dilemma::DilemmaInflections;
 use lemma::downloader::Downloader;
 use lemma::entry_processor::{EntryMap, EntryProcessor};
-use lemma::html_gen::{BuildParams, HtmlGenerator};
+use lemma::dictionary::{BuildParams, Dictionary};
 use lemma::sqlite::{write_sqlite, SqliteOptions};
 use lemma::version::LEMMA_VERSION;
 use std::path::{Path, PathBuf};
@@ -98,15 +99,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     let params = BuildParams {
         source_lang: cli.source.clone(),
-        build_date: build_date.clone(),
-        extraction_date: extraction_date.clone(),
         limit_percent: cli.limit,
         max_inflections: cli.max_inflections,
-        front_matter: serde_json::json!({}),
     };
-    // HtmlGenerator holds the shared form-ranking logic; nothing is written
-    // to disk unless create_output_files() is called, which we don't.
-    let mut generator = HtmlGenerator::new(entries, params, Some(&dilemma));
+    let mut generator = Dictionary::new(entries, params, Some(&dilemma));
     println!("Preparing entries...");
     generator.prepare();
 

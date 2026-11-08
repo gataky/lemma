@@ -1,7 +1,7 @@
 // SQLite export of the prepared dictionary.
 //
-// Writes the same headwords, senses and lookup forms the Kindle build uses,
-// but as structured, queryable data with none of Kindle's display limits:
+// The `lemma-sqlite` binary's database: an older layout (schema 1) than the
+// one `lemma` writes (src/sqlite_export.rs), without that export's limits:
 // every inflection and polytonic variant is kept (ranked), every sense is
 // kept, and forms claimed by several headwords are kept for each of them
 // with an `is_primary` flag instead of being dropped.
@@ -25,9 +25,9 @@
 //   WHERE senses_fts MATCH 'eat';
 
 use crate::entry_processor::Entry;
-use crate::html_gen::{
+use crate::dictionary::{
     clean_etymology, greek_word_re, normalize_for_sorting, strip_def_qualifiers,
-    strip_transliterations, EntryForms, HtmlGenerator,
+    strip_transliterations, Dictionary, EntryForms,
 };
 use rayon::prelude::*;
 use rusqlite::{params, Connection};
@@ -75,7 +75,7 @@ CREATE TABLE senses (
     example_bold        TEXT               -- JSON [[start,end],...] codepoint offsets to highlight in example
 );
 
--- Greek words in a gloss that are themselves headwords (Kindle's clickable links).
+-- Greek words in a gloss that are themselves headwords.
 CREATE TABLE xrefs (
     sense_id    INTEGER NOT NULL REFERENCES senses(id),
     headword_id INTEGER NOT NULL REFERENCES headwords(id),
@@ -150,7 +150,7 @@ pub fn form_key(s: &str) -> String {
 /// Write the prepared dictionary to `path`, replacing any existing file.
 /// `generator.prepare()` must have been called first.
 pub fn write_sqlite(
-    generator: &HtmlGenerator,
+    generator: &Dictionary,
     equivalences: &HashMap<String, String>,
     path: &Path,
     opts: &SqliteOptions,

@@ -1,4 +1,4 @@
-// Look up words in the SQLite dictionary built with `lemma --sqlite`.
+// Look up words in the SQLite dictionary built with `lemma` (or `make sqlite`).
 //
 // Usage:
 //     cargo run --release --bin lookup -- σπίτι
@@ -48,7 +48,7 @@ fn main() -> ExitCode {
     let conn = match Connection::open_with_flags(&cli.db, OpenFlags::SQLITE_OPEN_READ_ONLY) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Cannot open {}: {} (build it with `lemma --sqlite`)", cli.db.display(), e);
+            eprintln!("Cannot open {}: {} (build it with `make sqlite`)", cli.db.display(), e);
             return ExitCode::FAILURE;
         }
     };

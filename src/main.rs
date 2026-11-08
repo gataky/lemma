@@ -1,12 +1,10 @@
-// Lemma - Greek Kindle Dictionary Generator.
-// CLI entry point.
+// Lemma - Greek dictionary generator. CLI entry point.
 
 use clap::Parser;
 use lemma::generator::{self, GeneratorOptions};
-use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
-#[command(about = "Lemma - Greek Dictionary Generator. Produces EPUB and optional MOBI for sideloading.")]
+#[command(about = "Lemma - Greek Dictionary Generator. Writes lemma_greek_<source>/lemma_greek_<source>.db, a SQLite database.")]
 struct Cli {
     /// Source Wiktionary language: 'en' (English) or 'el' (Greek).
     #[arg(short = 's', long = "source", default_value = "en")]
@@ -16,35 +14,9 @@ struct Cli {
     #[arg(short = 'l', long = "limit")]
     limit: Option<f64>,
 
-    /// Max inflections per headword. Default: 255
+    /// Max searchable inflected forms per headword. Default: 255
     #[arg(short = 'i', long = "inflections")]
     inflections: Option<usize>,
-
-    /// Also generate .mobi via kindling (for sideloading).
-    #[arg(short = 'm', long = "mobi", default_value_t = false)]
-    mobi: bool,
-
-    /// Also generate a StarDict bundle (.ifo/.idx/.dict/.syn directory plus a
-    /// matching .zip in dist/) for use with GoldenDict, GoldenDict-ng,
-    /// KOReader, sdcv, and other non-Kindle readers. The short flag is
-    /// `-s` for `--source` (collision-free), so use the long form here.
-    #[arg(long = "stardict", default_value_t = false)]
-    stardict: bool,
-
-    /// Emit the .epub as a valid EPUB3 dictionary (content_NN.xhtml +
-    /// Search Key Map) instead of the legacy idx-HTML EPUB2. This is the
-    /// format KDP's modern converter accepts. The MOBI/idx path is unaffected.
-    #[arg(long = "epub3", default_value_t = false)]
-    epub3: bool,
-
-    /// Also write a SQLite database (headwords, senses, searchable forms with
-    /// accent-insensitive and phonetic lookup keys) into the build directory.
-    #[arg(long = "sqlite", default_value_t = false)]
-    sqlite: bool,
-
-    /// Path to a JSON file that overrides front-matter fields.
-    #[arg(long = "front-matter", value_name = "PATH")]
-    front_matter: Option<PathBuf>,
 }
 
 fn main() {
@@ -65,12 +37,7 @@ fn main() {
     let opts = GeneratorOptions {
         source_lang: cli.source,
         limit_percent: cli.limit,
-        generate_mobi: cli.mobi,
-        generate_stardict: cli.stardict,
-        generate_epub3: cli.epub3,
-        generate_sqlite: cli.sqlite,
         max_inflections: cli.inflections,
-        front_matter_path: cli.front_matter,
     };
 
     if let Err(e) = generator::run(opts) {

@@ -14,7 +14,7 @@ It describes **schema version 3**. Check `meta.schema_version` before use.
 | English → Greek lookup terms | 88,894 (20,183 point at Greek words or phrases that have no full entry) |
 | File size | ~76 MB |
 | Source | English Wiktionary via [kaikki.org](https://kaikki.org/) (Greek entries plus English entries' translation tables), inflections from [Dilemma](https://github.com/open-greek/dilemma), word frequencies from [FrequencyWords](https://github.com/hermitdave/FrequencyWords) (OpenSubtitles) |
-| Generator | [lemma](https://github.com/open-greek/lemma): `cargo run --release -- --sqlite` |
+| Generator | [lemma](https://github.com/open-greek/lemma): `make sqlite` |
 
 Counts are from the 2026-10-30 Wiktionary extraction and change from build to build. Read `meta` for the build you have.
 
@@ -867,10 +867,10 @@ def open_dictionary(path):
 The database comes from the lemma repo:
 
 ```bash
-cargo run --release -- --sqlite      # writes lemma_greek_en/lemma_greek_en.db
+make sqlite      # writes lemma_greek_en/lemma_greek_en.db
 ```
 
-With the optional data in place (Dilemma files via `DILEMMA_DATA_DIR`, the English kaikki dump at `$KAIKKI_LOCAL_DIR/en/kaikki.org-dictionary-English.jsonl.gz`), you get the numbers above. Without them, the build still works, with fewer inflected forms (about 257K) and an English index built from glosses only. See the lemma README.
+`make sqlite` reads the Dilemma files and the English kaikki dump from `../lemma-data` and stops if one is missing, so you get the numbers above. Running `cargo run --release` without that data still works, with fewer inflected forms (about 257K) and an English index built from glosses only. See the lemma README.
 
 ## License
 

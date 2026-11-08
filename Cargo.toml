@@ -2,7 +2,7 @@
 name = "lemma"
 version = "1.3.5"
 edition = "2024"
-description = "Greek-English Kindle dictionary generator"
+description = "Greek-English dictionary generator (SQLite)"
 
 [[bin]]
 name = "lemma"
@@ -22,13 +22,10 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 flate2 = "1"
-zip = { version = "2", default-features = false, features = ["deflate"] }
 rayon = "1.10"
 regex = "1"
-quick-xml = "0.36"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 httpdate = "1"
-kindling = { version = "0.45.2", package = "kindling-mobi" }
 rusqlite = { version = "0.32", features = ["bundled"] }
 unicode-normalization = "0.1"
 

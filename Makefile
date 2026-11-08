@@ -20,4 +20,4 @@ sqlite: ## Build lemma_greek_en/lemma_greek_en.db with the full lemma-data
 	@for f in $(REQUIRED_DATA); do \
 		[ -f "$$f" ] || { echo "Missing data file: $$f" >&2; exit 1; }; \
 	done
-	cargo run --release --bin lemma -- --sqlite
+	cargo run --release --bin lemma

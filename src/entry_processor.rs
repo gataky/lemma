@@ -571,6 +571,7 @@ impl<'a> EntryProcessor<'a> {
                 .collect()
         };
 
+        let headwords: HashSet<String> = self.entries.keys().cloned().collect();
         for (word, list) in self.entries.iter_mut() {
             for entry in list.iter_mut() {
                 if !entry.form_of_targets.is_empty() {
@@ -597,7 +598,18 @@ impl<'a> EntryProcessor<'a> {
                     }
 
                     // Tier 3: neither dilemma direct nor Kaikki had anything;
-                    // last resort is dilemma's form_to_lemma redirect.
+                    // last resort is dilemma's form_to_lemma redirect. Skip it
+                    // when that lemma is a headword of its own: its forms
+                    // belong there, not on a word that happens to be one of
+                    // them (σώσε "mayhem" would take all of σώζω's forms, and
+                    // the ship Αργώ all of the verb αργώ's).
+                    let redirect_is_headword = dilemma
+                        .form_to_lemma
+                        .get(&word)
+                        .is_some_and(|lemma| *lemma != word && headwords.contains(lemma));
+                    if redirect_is_headword {
+                        continue;
+                    }
                     let redirected = filter_valid(dilemma.get_inflections(&word));
                     if !redirected.is_empty() {
                         dilemma_count += redirected.len();

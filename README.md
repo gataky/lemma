@@ -131,10 +131,13 @@ Cross-references, etymology, usage examples, and polytonic lookups are always en
 
 ### SQLite Database
 
+`make sqlite` builds it with the full data from `../lemma-data` (`make sqlite LEMMA_DATA=/path/to/data` to use another location), and stops if a data file is missing.
+
 `--sqlite` stores the same processed data the Kindle build uses (after form-of merging and inflection deduplication) as plain tables. For using the database from another project (schema details, how to compute the lookup keys, queries, and a tested Python reference implementation), see [docs/sqlite-database.md](docs/sqlite-database.md).
 
 - `headword` (word, corpus frequency), `entry` (one per part of speech, with gender/plural head info and etymology), `sense` (gloss plus optional example and translation)
 - `form`: every searchable spelling of a headword, including inflected forms (είπα → λέω), with two lookup keys: `norm` (accent- and case-insensitive, `σπιτι`) and `phonetic` (by sound, so `σπητι`, `spiti` and σπίτι share the key `spiti`)
+- `inflection_table`, `inflection`: labelled paradigms for conjugation and declension tables (`έγραψα`: `active first-person indicative past perfective singular`), for verbs, nouns, adjectives and every other part of speech Wiktionary inflects. Unlike `form`, these keep tense, person, case, gender and number, and include multi-word forms (θα γράψω)
 - `en_index`: English → Greek. English terms taken from the Greek entries' glosses, plus (optionally) English Wiktionary's translation tables, scored so curated translations and a gloss's leading words rank first. Translation-table words with no Greek entry of their own (μαύρη λίστα, "blacklist") are kept as text with no `headword_id`
 - `sense_fts`: FTS5 full-text index over glosses, used when `en_index` has no match
 - `meta`: schema version, lemma version, source, and Wiktionary extraction date

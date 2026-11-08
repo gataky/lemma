@@ -2,16 +2,17 @@
 
 This guide is for developers and coding agents building on `lemma_greek_en.db`, a Modern Greek ↔ English dictionary in a single read-only SQLite file. It covers the schema, the lookup keys your code must compute, ready-to-use queries, and a tested Python reference implementation.
 
-It describes **schema version 2**. Check `meta.schema_version` before use.
+It describes **schema version 3**. Check `meta.schema_version` before use.
 
 ## At a glance
 
 | | |
 |---|---|
-| Greek headwords | 31,571 (33,087 part-of-speech entries, 46,081 senses) |
-| Searchable Greek spellings | 317,514 (headwords plus inflected forms: είπα → λέω) |
-| English → Greek lookup terms | 88,834 (20,207 point at Greek words or phrases that have no full entry) |
-| File size | ~56 MB |
+| Greek headwords | 31,615 (33,131 part-of-speech entries, 46,174 senses) |
+| Inflection tables | 53,186, holding 489,351 labelled forms (verb conjugations, noun and adjective declensions, and more) |
+| Searchable Greek spellings | 317,756 (headwords plus inflected forms: είπα → λέω) |
+| English → Greek lookup terms | 88,894 (20,183 point at Greek words or phrases that have no full entry) |
+| File size | ~76 MB |
 | Source | English Wiktionary via [kaikki.org](https://kaikki.org/) (Greek entries plus English entries' translation tables), inflections from [Dilemma](https://github.com/open-greek/dilemma), word frequencies from [FrequencyWords](https://github.com/hermitdave/FrequencyWords) (OpenSubtitles) |
 | Generator | [lemma](https://github.com/open-greek/lemma): `cargo run --release -- --sqlite` |
 
@@ -22,6 +23,7 @@ What it is good for:
 - **Greek → English** with full detail: part of speech, gender and plural, numbered senses, examples with translations, etymology.
 - **Greek spelling help**: type a word without accents (`σπιτι`), misspelled by sound (`σπητι`), or in Greeklish (`spiti`), and get σπίτι.
 - **Inflected forms**: `είπα` finds λέω, `δρόμους` finds δρόμος.
+- **Paradigms**: every labelled form of a verb, noun or adjective, to draw conjugation and declension tables. See [Inflection tables](#inflection-tables).
 - **English → Greek** as a lightweight index: Greek candidates, each with a short English gloss and a sense label to tell meanings apart (bank → τράπεζα [institution], όχθη [edge of river or lake]).
 
 ## Rules to follow
@@ -29,7 +31,7 @@ What it is good for:
 1. **Open it read-only** (`file:…?mode=ro`). The database is a build artifact. Never write to it. Keep app data (favourites, history) in your own database.
 2. **Do not persist row ids across database versions.** Every build renumbers `headword.id`, `entry.id` and `sense.id`. To remember a word, store `headword.word` (plus `entry.pos` if you need the part of speech) and look it up again.
 3. **Your code must compute the lookup keys.** SQL cannot. `form.norm`, `form.phonetic` and `en_index.term` hold keys made by the functions in [Lookup keys](#lookup-keys). Run the same function on the user's input before querying. Use the [Python reference](#python-reference-implementation) as-is, or port it and check your port against its [test vectors](#verifying-a-port).
-4. **Check `meta.schema_version` = `'2'`** when opening. A different value means the schema changed, so re-read this guide for that version.
+4. **Check `meta.schema_version` = `'3'`** when opening. A different value means the schema changed, so re-read this guide for that version.
 
 ## Schema
 
@@ -68,6 +70,33 @@ CREATE TABLE form (
     phonetic    TEXT NOT NULL,
     PRIMARY KEY (norm, headword_id)
 ) WITHOUT ROWID;
+CREATE TABLE inflection_table (
+    id       INTEGER PRIMARY KEY,
+    entry_id INTEGER NOT NULL REFERENCES entry(id),
+    ord      INTEGER NOT NULL,
+    kind     TEXT NOT NULL,
+    word     TEXT,
+    label    TEXT,
+    template TEXT,
+    note     TEXT
+);
+CREATE TABLE inflection_tags (
+    id   INTEGER PRIMARY KEY,
+    tags TEXT NOT NULL UNIQUE
+);
+CREATE TABLE inflection (
+    table_id INTEGER NOT NULL REFERENCES inflection_table(id),
+    ord      INTEGER NOT NULL,
+    form     TEXT NOT NULL,
+    tags_id  INTEGER NOT NULL REFERENCES inflection_tags(id),
+    PRIMARY KEY (table_id, ord)
+) WITHOUT ROWID;
+CREATE VIEW inflection_row AS
+SELECT t.entry_id, t.ord AS table_ord, t.kind, t.word, t.label, t.template, t.note,
+       i.ord, i.form, g.tags
+FROM inflection_table t
+JOIN inflection i ON i.table_id = t.id
+JOIN inflection_tags g ON g.id = i.tags_id;
 CREATE TABLE en_index (
     term        TEXT NOT NULL,
     greek       TEXT NOT NULL,
@@ -84,21 +113,25 @@ CREATE INDEX entry_headword ON entry(headword_id);
 CREATE INDEX sense_entry    ON sense(entry_id);
 CREATE INDEX form_phonetic  ON form(phonetic);
 CREATE INDEX form_headword  ON form(headword_id);
+CREATE INDEX inflection_table_entry ON inflection_table(entry_id);
 ```
 
 ```
 headword 1──* entry 1──* sense
-    │                      ▲
-    1                      │ (optional)
-    *                      │
-   form          en_index ─┘   en_index.headword_id → headword (nullable)
+    │            │         ▲
+    1            1         │ (optional)
+    *            *         │
+   form  inflection_table  en_index   en_index.headword_id → headword (nullable)
+                 1
+                 *
+            inflection *──1 inflection_tags
 ```
 
 ### `meta`
 
 | key | example |
 |---|---|
-| `schema_version` | `2` |
+| `schema_version` | `3` |
 | `lemma_version` | `1.3.5` |
 | `source` | `English Wiktionary via kaikki.org` |
 | `source_lang` | `en` (the definitions are English) |
@@ -128,7 +161,7 @@ One row per meaning, in order (`ord` from 0). Number them `ord + 1` for display.
 
 - `gloss`: English definition as plain text. It may start with usage labels in parentheses: `(figuratively) house`, `(colloquial) money`, `(obsolete) to eat`. Show it as-is, or style the leading `(…)` as a label.
 - `example`, `example_translation`: optional Greek example sentence and its English translation (about 5,500 senses have one). `example_translation` can be NULL even when `example` is set.
-- `is_reference`: `1` when the gloss points at another Greek word instead of giving a meaning, e.g. `nominative plural of ελληνικός` or `alternative form of τρώω`. About 5,900 senses. Show these, but when you need one representative meaning for a headword, prefer `is_reference = 0`.
+- `is_reference`: `1` when the gloss points at another Greek word instead of giving a meaning, e.g. `nominative plural of ελληνικός` or `alternative form of τρώω`. About 6,000 senses. Show these, but when you need one representative meaning for a headword, prefer `is_reference = 0`.
 
 ### `form`
 
@@ -157,7 +190,7 @@ FTS5 full-text index over `sense.gloss` (external content, rowid = `sense.id`), 
 
 ## Lookup keys
 
-All of these must be computed in your app, on the user's input, exactly as below. The [Python reference](#python-reference-implementation) is the executable spec. It reproduces the stored `norm` and `phonetic` for all 317,514 `form` rows.
+All of these must be computed in your app, on the user's input, exactly as below. The [Python reference](#python-reference-implementation) is the executable spec. It reproduces the stored `norm` and `phonetic` for all 317,756 `form` rows.
 
 ### `norm`
 
@@ -272,7 +305,7 @@ ORDER BY s.is_reference, e.ord, s.ord LIMIT 1;
 SELECT form FROM form WHERE headword_id = :headword_id ORDER BY form;
 ```
 
-This gives σπίτι, σπίτια, σπιτάκι, σπιτιού, σπιτιών, …. Forms carry no grammatical labels (case, number, tense), so this is a search list, not an inflection table.
+This gives σπίτι, σπίτια, σπιτάκι, σπιτιού, σπιτιών, …. Forms here carry no grammatical labels (case, number, tense), so this is a search list. For labelled forms, see [Inflection tables](#inflection-tables).
 
 ### Autocomplete
 
@@ -335,6 +368,125 @@ A gloss contributes 3 if the term stands alone in the gloss's first clause (`cit
 
 A matching pair in English Wiktionary's translation tables adds 3, so curated translations outrank incidental gloss matches. Translation-only rows have score 3.
 
+## Inflection tables
+
+`inflection_table` and `inflection` hold Wiktionary's paradigms with their grammatical labels, for every part of speech that has them: conjugations, noun and adjective declensions, pronouns, articles, numerals. Use them to draw a table. To find a word from one of its forms, use `form`, not these.
+
+| | |
+|---|---|
+| Tables | 53,186 (25,183 inflection tables, 28,003 headword lines) |
+| Cells | 489,351 |
+| Share of the file | about 20 MB, or 6 MB gzipped |
+
+### Build a table
+
+Start from any spelling. `form` finds the headword, so `βοηθώ` reaches the table on βοηθάω, `σηκώνομαι` the one on σηκώνω and `είπα` the one on λέω:
+
+```sql
+SELECT DISTINCT h.id, h.word, e.id AS entry_id, e.pos
+FROM form f
+JOIN headword h ON h.id = f.headword_id
+JOIN entry e ON e.headword_id = h.id
+JOIN inflection_table t ON t.entry_id = e.id
+WHERE f.norm = :norm AND t.kind IN ('conjugation', 'declension') AND t.word IS NULL;
+```
+
+Then read the cells of that entry through the `inflection_row` view:
+
+```sql
+SELECT table_ord, kind, label, template, note, form, tags
+FROM inflection_row
+WHERE entry_id = :entry_id AND word IS NULL
+ORDER BY table_ord, ord;
+```
+
+Handle one `table_ord` at a time. Then, for each cell of your layout, split `tags` on spaces, match the labels that cell needs, and keep the order of `ord`. Stay within a table because labels are not unique across tables: a positive adjective has no degree label, so `masculine genitive singular` alone also matches the comparative and superlative tables. A word can have several entries (καλός is an adjective and a noun), and `norm` ignores accents (κάλος), so pick by `pos` and spelling.
+
+```js
+const hasAll = (tags, wanted) => { const set = new Set(tags.split(" ")); return wanted.every(t => set.has(t)); };
+const cell = (rows, ...wanted) => rows.filter(r => hasAll(r.tags, wanted)).map(r => r.form);
+
+// rows: one conjugation table
+cell(rows, "active", "past", "perfective", "first-person", "singular");   // ["έγραψα"]
+cell(rows, "active", "past", "perfective", "third-person", "plural");     // ["έγραψαν", "γράψαν", "γράψανε"]
+```
+
+**Do not match tags with a bare `LIKE`.** `perfective` is inside `imperfective`, and `perfect` is inside both `imperfect` and `perfective`, so `tags LIKE '%perfective%'` returns the wrong tense. In SQL, pad with spaces:
+
+```sql
+SELECT form FROM inflection_row
+WHERE entry_id = :entry_id AND word IS NULL
+  AND ' ' || tags || ' ' LIKE '% perfective %'
+  AND ' ' || tags || ' ' LIKE '% past %';
+```
+
+A cell can have several rows with identical `tags`. They are alternatives, most usual first (έγραψαν, γράψαν, γράψανε).
+
+### `inflection_table`
+
+- `entry_id`: the part-of-speech entry it belongs to.
+- `ord`: order within the entry, from 0.
+- `kind`: `conjugation`, `declension`, `inflection` (rare), or `head`. A `head` row holds the forms on the entry's headword line: `plural` for a noun, `feminine` and `neuter` for an adjective, `past` and `passive` for a verb, plus `alternative` spellings. About 2,300 verbs have only this, so it is your source of principal parts when there is no conjugation.
+- `word`: NULL for the headword's own tables. Otherwise the table belongs to a different word, one that was merged into this headword: χειρότερος under κακός, καφεδάκι under καφές, τρομαγμένος under τρομάζω. **Filter on `word IS NULL` to get the headword's paradigm.** List the others separately as related words.
+- `label`: Wiktionary's label for the whole table, or NULL: `perfect`, `deponent`, `imperfective`, `irregular`.
+- `template`: the Wiktionary template that built it, which identifies the inflection class: `el-conjug-1st`, `el-nF-α-ες-3b2`, `el-decl-adj`. Not always informative (`l-self`).
+- `note`: text Wiktionary attached to the table, in English, or NULL.
+
+An entry can have several declension or conjugation tables. Adjectives have one each for positive, comparative and superlative. A word with two etymologies that inflect differently has both.
+
+### `inflection`
+
+One row per cell, in Wiktionary's order. `(table_id, ord)` is the key, and `tags_id` points at `inflection_tags`, which stores each distinct label set once. Use the `inflection_row` view rather than joining these yourself.
+
+Unlike `form`, these rows are not deduplicated, have no search keys, and include multi-word forms (θα γράψω, έχοντας γράψει).
+
+### Tags
+
+`tags` is a sorted, space-separated set of Wiktionary labels. There are 681 distinct sets. The ones that matter:
+
+| Part of speech | Labels |
+|---|---|
+| Person, number | `first-person` `second-person` `third-person`, `singular` `plural` |
+| Voice | `active` `passive` |
+| Verb aspect | `imperfective` `perfective` |
+| Verb tense, mood | `present` `past` `imperfect` `future` `indicative` `imperative` `dependent` `subjunctive` |
+| Non-finite | `participle`, `infinitive-aorist` (the απαρέμφατο, γράψει), `indeclinable` |
+| Case | `nominative` `genitive` `accusative` `vocative` |
+| Gender | `masculine` `feminine` `neuter` |
+| Degree | `comparative` `superlative` (neither on a table means positive) |
+| Pronoun | `strong` `weak` |
+| Article | `definite` `indefinite` |
+| Usage | `rare` `informal` `archaic` `dated` `formal` |
+
+How the Modern Greek verb tenses map to tags:
+
+| Tense | Tags |
+|---|---|
+| Present | `present imperfective indicative` |
+| Imperfect | `imperfect imperfective indicative` |
+| Simple past | `past perfective indicative` |
+| Dependent (να γράψω) | `dependent perfective indicative` |
+| Imperative | `imperative imperfective` or `imperative perfective` |
+
+### What Wiktionary does not list
+
+Build these yourself:
+
+- **Future.** Usually only the first person singular is listed (θα γράφω, θα γράψω). For the rest, put θα before the present or dependent forms.
+- **Perfect tenses.** Conjugate έχω and add the `infinitive-aorist` form: έχω γράψει, είχα γράψει. Forms with `perfect` in the tags are mostly participles.
+- **Subjunctive.** It has no cells of its own. The table's `note` says how to form it.
+
+### Reading the cells
+
+Cell text is Wiktionary's own, unedited, so:
+
+- `-` means the form does not exist, which is different from no row at all (the data just doesn't say). Show it as a dash.
+- A row starting with a hyphen is an ending, not a word: γραμμένος, ‑η, ‑ο arrive as three rows with the same tags. Join them for display. Both `-` and the non-breaking `‑` (U+2011) occur.
+- In a cell with alternatives, only the first keeps θα: `θα γραφτώ` is followed by bare `γραφώ`.
+- About 1,500 cells from hand-built tables hold more than one form or use markup: `παράλυσαν, παραλύσαν`, `{(ε)θεωρείτο}`, `θέλουν² (θένε)`. A few have typos, including Latin letters in Greek words. Keep your display tolerant of them.
+
+The build corrects two problems in the source: Wiktionary's extractor tags comparative and superlative tables identically, and these are told apart (`ομορφότερος` is `comparative`, `ομορφότατος` is `superlative`). Table headers it reports as forms become `note`. Romanizations are dropped, since they can be derived.
+
 ## Gotchas
 
 - **Homophones rank by frequency.** `geia` returns για ("for") before γεια ("hello"), and `poli` returns πολύ before πόλη. That is by design for a spelling aid, so show several results with their glosses instead of jumping to the first.
@@ -390,7 +542,7 @@ search_english(conn, "bank")[:2]              # τράπεζα [institution], ό
 ```
 
 ```python
-"""Reference lookup for the lemma SQLite dictionary (schema_version 2).
+"""Reference lookup for the lemma SQLite dictionary (schema_version 3).
 
 Port of lemma's src/greek_keys.rs, src/english_index.rs and src/lookup.rs.
 Standard library only.
@@ -705,8 +857,8 @@ def entries(conn, headword_id):
 def open_dictionary(path):
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     (version,) = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
-    if version != "2":
-        raise RuntimeError(f"expected schema_version 2, got {version}")
+    if version != "3":
+        raise RuntimeError(f"expected schema_version 3, got {version}")
     return conn
 ```
 

@@ -263,6 +263,7 @@ mod tests {
                 head: None,
                 etymology: None,
                 senses: vec![ExportSense { gloss: gloss.to_string(), example: None, example_translation: None }],
+                tables: vec![],
             }],
             forms: forms.iter().map(|f| f.to_string()).collect(),
         }

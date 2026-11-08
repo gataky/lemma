@@ -124,6 +124,7 @@ pub fn run(opts: GeneratorOptions) -> Result<(), Box<dyn std::error::Error>> {
             "  {} English terms; {} translations linked to headwords, {} kept as text only",
             stats.en_terms, stats.translations_linked, stats.translations_unlinked
         );
+        println!("  {} inflection tables, {} cells", stats.inflection_tables, stats.inflections);
         println!("  Wrote {}", db_path.display());
     }
     drop(html_gen);

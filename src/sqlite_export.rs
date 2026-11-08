@@ -8,11 +8,12 @@
 use crate::en_translations::EnTranslation;
 use crate::english_index;
 use crate::greek_keys;
+use crate::inflection::InflectionTable;
 use rusqlite::{Connection, params};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 /// Added to a term's gloss score when English Wiktionary's translation table
 /// also links the English word to the headword, so curated pairs outrank
@@ -31,6 +32,7 @@ pub struct ExportEntry {
     pub head: Option<String>,
     pub etymology: Option<String>,
     pub senses: Vec<ExportSense>,
+    pub tables: Vec<InflectionTable>,
 }
 
 pub struct ExportHeadword {
@@ -47,6 +49,8 @@ pub struct ExportStats {
     pub entries: usize,
     pub senses: usize,
     pub forms: usize,
+    pub inflection_tables: usize,
+    pub inflections: usize,
     pub en_terms: usize,
     pub translations_linked: usize,
     /// Translations whose Greek word or phrase matches no headword or form;
@@ -103,6 +107,40 @@ CREATE TABLE form (
     phonetic    TEXT NOT NULL,
     PRIMARY KEY (norm, headword_id)
 ) WITHOUT ROWID;
+-- One inflection table of an entry, or (kind 'head') the forms on its headword
+-- line. word is NULL for the headword's own tables; otherwise the table came
+-- from a form-of entry merged into this headword, and word is what it inflects.
+CREATE TABLE inflection_table (
+    id       INTEGER PRIMARY KEY,
+    entry_id INTEGER NOT NULL REFERENCES entry(id),
+    ord      INTEGER NOT NULL,
+    kind     TEXT NOT NULL,
+    word     TEXT,
+    label    TEXT,
+    template TEXT,
+    note     TEXT
+);
+-- The distinct label sets, shared because there are few of them and the
+-- database is loaded whole into memory by browser apps.
+CREATE TABLE inflection_tags (
+    id   INTEGER PRIMARY KEY,
+    tags TEXT NOT NULL UNIQUE
+);
+-- One cell of a table, in Wiktionary's order. Unlike `form` these are not
+-- deduplicated and include multi-word forms (θα γράψω).
+CREATE TABLE inflection (
+    table_id INTEGER NOT NULL REFERENCES inflection_table(id),
+    ord      INTEGER NOT NULL,
+    form     TEXT NOT NULL,
+    tags_id  INTEGER NOT NULL REFERENCES inflection_tags(id),
+    PRIMARY KEY (table_id, ord)
+) WITHOUT ROWID;
+CREATE VIEW inflection_row AS
+SELECT t.entry_id, t.ord AS table_ord, t.kind, t.word, t.label, t.template, t.note,
+       i.ord, i.form, g.tags
+FROM inflection_table t
+JOIN inflection i ON i.table_id = t.id
+JOIN inflection_tags g ON g.id = i.tags_id;
 -- English->Greek: normalized English term (english_index::normalize_term)
 -- to a Greek word or phrase. headword_id is set when the Greek is one of
 -- our headwords (or a form of one), NULL for translation-table words we
@@ -129,6 +167,7 @@ CREATE INDEX entry_headword ON entry(headword_id);
 CREATE INDEX sense_entry ON sense(entry_id);
 CREATE INDEX form_phonetic ON form(phonetic);
 CREATE INDEX form_headword ON form(headword_id);
+CREATE INDEX inflection_table_entry ON inflection_table(entry_id);
 INSERT INTO sense_fts(sense_fts) VALUES ('rebuild');
 ANALYZE;
 ";
@@ -165,6 +204,7 @@ pub fn write_to(
     // forms (λεπτά "money" is also a form of λεπτός "thin") and accent
     // differences (πλαγιά "slope" vs πλάγια "obliquely") pick the wrong word.
     let mut headword_by_spelling: HashMap<String, (i64, i64)> = HashMap::new();
+    let mut tags_ids: HashMap<&str, i64> = HashMap::new();
 
     let tx = conn.transaction()?;
     {
@@ -180,6 +220,14 @@ pub fn write_to(
         )?;
         let mut ins_form = tx.prepare(
             "INSERT INTO form (norm, headword_id, form, phonetic) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        let mut ins_table = tx.prepare(
+            "INSERT INTO inflection_table (id, entry_id, ord, kind, word, label, template, note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )?;
+        let mut ins_tags = tx.prepare("INSERT INTO inflection_tags (id, tags) VALUES (?1, ?2)")?;
+        let mut ins_inflection = tx.prepare(
+            "INSERT INTO inflection (table_id, ord, form, tags_id) VALUES (?1, ?2, ?3, ?4)",
         )?;
 
         ins_meta.execute(params!["schema_version", SCHEMA_VERSION.to_string()])?;
@@ -199,6 +247,27 @@ pub fn write_to(
                     entry_id, headword_id, entry_ord as i64,
                     e.pos, e.pos_display, e.head, e.etymology
                 ])?;
+                for (table_ord, t) in e.tables.iter().enumerate() {
+                    stats.inflection_tables += 1;
+                    let table_id = stats.inflection_tables as i64;
+                    ins_table.execute(params![
+                        table_id, entry_id, table_ord as i64,
+                        t.kind, t.word, t.label, t.template, t.note
+                    ])?;
+                    for (form_ord, f) in t.forms.iter().enumerate() {
+                        let tags_id = match tags_ids.get(f.tags.as_str()) {
+                            Some(&id) => id,
+                            None => {
+                                let id = tags_ids.len() as i64 + 1;
+                                ins_tags.execute(params![id, f.tags])?;
+                                tags_ids.insert(&f.tags, id);
+                                id
+                            }
+                        };
+                        ins_inflection.execute(params![table_id, form_ord as i64, f.form, tags_id])?;
+                        stats.inflections += 1;
+                    }
+                }
                 for (sense_ord, s) in e.senses.iter().enumerate() {
                     stats.senses += 1;
                     let sense_id = stats.senses as i64;
@@ -280,6 +349,7 @@ pub fn write_to(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inflection::InflectedForm;
 
     fn sample() -> Vec<ExportHeadword> {
         vec![
@@ -296,6 +366,19 @@ mod tests {
                         example: Some("Πάω σπίτι.".to_string()),
                         example_translation: Some("I'm going home.".to_string()),
                     }],
+                    tables: vec![InflectionTable {
+                        kind: "declension".to_string(),
+                        word: None,
+                        label: None,
+                        template: Some("el-nN-ι-ια-2b".to_string()),
+                        note: Some("a note".to_string()),
+                        forms: vec![
+                            InflectedForm { form: "σπίτια".to_string(), tags: "nominative plural".to_string() },
+                            InflectedForm { form: "σπιτιού".to_string(), tags: "genitive singular".to_string() },
+                            InflectedForm { form: "σπίτια".to_string(), tags: "accusative plural".to_string() },
+                            InflectedForm { form: "σπίτια".to_string(), tags: "nominative plural".to_string() },
+                        ],
+                    }],
                 }],
                 forms: vec!["σπιτιού".to_string(), "σπίτια".to_string(), "σπιτιοῦ".to_string()],
             },
@@ -308,6 +391,7 @@ mod tests {
                     head: None,
                     etymology: None,
                     senses: vec![ExportSense { gloss: "city".to_string(), example: None, example_translation: None }],
+                    tables: vec![],
                 }],
                 forms: vec![],
             },
@@ -320,6 +404,7 @@ mod tests {
                     head: None,
                     etymology: None,
                     senses: vec![ExportSense { gloss: "very, much".to_string(), example: None, example_translation: None }],
+                    tables: vec![],
                 }],
                 forms: vec![],
             },
@@ -426,6 +511,37 @@ mod tests {
             .map(|r| r.unwrap())
             .collect();
         assert_eq!(words, vec!["πολύ", "πόλη"]);
+    }
+
+    #[test]
+    fn inflection_cells_are_stored_in_order_with_shared_tags() {
+        let (conn, stats) = {
+            let mut conn = Connection::open_in_memory().unwrap();
+            let stats = write_to(&mut conn, &sample(), &[], &[]).unwrap();
+            (conn, stats)
+        };
+        assert_eq!((stats.inflection_tables, stats.inflections), (1, 4));
+
+        let rows: Vec<(String, String, String, Option<String>)> = conn
+            .prepare(
+                "SELECT r.form, r.tags, r.template, r.note FROM inflection_row r
+                 JOIN entry e ON e.id = r.entry_id JOIN headword h ON h.id = e.headword_id
+                 WHERE h.word = 'σπίτι' ORDER BY r.table_ord, r.ord",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 4, "cells are not deduplicated");
+        assert_eq!(rows[1].0, "σπιτιού");
+        assert_eq!(rows[1].1, "genitive singular");
+        assert_eq!(rows[0].2, "el-nN-ι-ια-2b");
+        assert_eq!(rows[0].3.as_deref(), Some("a note"));
+
+        let distinct: i64 =
+            conn.query_row("SELECT COUNT(*) FROM inflection_tags", [], |r| r.get(0)).unwrap();
+        assert_eq!(distinct, 3);
     }
 
     #[test]

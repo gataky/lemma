@@ -2,6 +2,7 @@
 
 use crate::declension::{expand_declension, is_declension_template, strip_template_prefix};
 use crate::dilemma::DilemmaInflections;
+use crate::inflection::{self, InflectionTable};
 use rayon::prelude::*;
 use regex::Regex;
 use serde_json::Value;
@@ -62,6 +63,8 @@ pub struct Entry {
     pub etymology: Option<String>,
     pub head_expansion: Option<String>,
     pub inflections: Vec<String>,
+    /// Inflection tables with grammatical labels, for the SQLite export.
+    pub tables: Vec<InflectionTable>,
     pub expanded_from_template: bool,
     pub form_of_targets: Vec<String>,
 }
@@ -148,6 +151,7 @@ pub struct LineResult {
     pub definitions: Vec<String>,
     pub examples: Vec<Option<Example>>,
     pub inflections: Vec<String>,
+    pub tables: Vec<InflectionTable>,
     pub etymology: Option<String>,
     pub head_expansion: Option<String>,
     pub expanded_from_template: bool,
@@ -164,6 +168,7 @@ fn empty_result(line_no: usize) -> LineResult {
         definitions: Vec::new(),
         examples: Vec::new(),
         inflections: Vec::new(),
+        tables: Vec::new(),
         etymology: None,
         head_expansion: None,
         expanded_from_template: false,
@@ -262,6 +267,7 @@ fn build_line_result(line_no: usize, raw_line: &str, source_lang: &str) -> Optio
     }
 
     let inflections = collect_inflections_from(&entry, &word, source_lang);
+    let tables = inflection::parse_tables(&entry);
 
     if source_lang == "el" {
         if let Some(templates) = entry.get("head_templates").and_then(|v| v.as_array()) {
@@ -287,6 +293,7 @@ fn build_line_result(line_no: usize, raw_line: &str, source_lang: &str) -> Optio
         definitions,
         examples,
         inflections,
+        tables,
         etymology,
         head_expansion,
         expanded_from_template,
@@ -518,6 +525,7 @@ impl<'a> EntryProcessor<'a> {
             existing.inflections.extend(r.inflections);
             let mut seen_inf = HashSet::new();
             existing.inflections.retain(|i| seen_inf.insert(i.clone()));
+            inflection::merge_tables(&mut existing.tables, r.tables);
             if existing.etymology.is_none() {
                 existing.etymology = r.etymology;
             }
@@ -540,6 +548,7 @@ impl<'a> EntryProcessor<'a> {
                 etymology: r.etymology,
                 head_expansion: r.head_expansion,
                 inflections: r.inflections,
+                tables: r.tables,
                 expanded_from_template: r.expanded_from_template,
                 form_of_targets: r.form_of_targets,
             });
@@ -662,6 +671,7 @@ impl<'a> EntryProcessor<'a> {
                 etymology,
                 head_expansion,
                 inflections,
+                tables: Vec::new(),
                 expanded_from_template,
                 form_of_targets,
             });

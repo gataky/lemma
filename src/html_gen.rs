@@ -4,6 +4,7 @@ use crate::dilemma::DilemmaInflections;
 use crate::entry_processor::{Entry, EntryMap, Example};
 use crate::frequency::FrequencyRanker;
 use crate::html_escape::escape_html;
+use crate::inflection::{merge_tables, InflectionTable};
 use crate::sqlite_export::{ExportEntry, ExportHeadword, ExportSense};
 use chrono::{Datelike, Local};
 use rayon::prelude::*;
@@ -337,8 +338,8 @@ impl<'a> HtmlGenerator<'a> {
     }
 
     fn merge_form_of_into_parents(&mut self) {
-        let mut to_remove: Vec<String> = Vec::new();
-        let mut merged_count = 0;
+        let mut merged: Vec<String> = Vec::new();
+        let mut parent_of: HashMap<String, String> = HashMap::new();
 
         // Collect candidates
         let candidates: Vec<String> = self
@@ -383,20 +384,35 @@ impl<'a> HtmlGenerator<'a> {
                 best
             };
 
-            if let Some(parent_entries) = self.entries.get_mut(&best) {
+            parent_of.insert(word.clone(), best);
+            merged.push(word);
+        }
+
+        // Words that are forms of each other (αλφάβητο <-> αλφάβητος) have no
+        // true parent. Merging them would delete them all, so they stay.
+        let cyclic = words_on_cycles(&parent_of);
+        parent_of.retain(|word, _| !cyclic.contains(word));
+        merged.retain(|word| !cyclic.contains(word));
+
+        for word in &merged {
+            if let Some(parent_entries) = self.entries.get_mut(root_of(word, &parent_of)) {
                 for pe in parent_entries.iter_mut() {
-                    if !pe.inflections.contains(&word) {
+                    if !pe.inflections.contains(word) {
                         pe.inflections.push(word.clone());
                     }
                 }
             }
-            to_remove.push(word);
-            merged_count += 1;
         }
 
-        let set: HashSet<String> = to_remove.into_iter().collect();
+        self.move_tables_to_parents(&merged, &parent_of);
+
+        let merged_count = merged.len();
+        let set: HashSet<String> = merged.into_iter().collect();
         self.entries.remove_many(&set);
         println!("  Merged {} form-of entries into parent headwords", merged_count);
+        if !cyclic.is_empty() {
+            println!("  Kept {} headwords that are forms of each other", cyclic.len());
+        }
     }
 
     fn build_iform_owners(&mut self) {
@@ -632,6 +648,29 @@ impl<'a> HtmlGenerator<'a> {
             head: self.get_head_info_for_pos(&[entry], word),
             etymology,
             senses,
+            tables: entry.tables.clone(),
+        }
+    }
+
+    // A merged form-of entry can still have a table of its own (χειρότερος
+    // under κακός, καφεδάκι under καφές). It survives on the parent, labelled
+    // with the word it inflects.
+    fn move_tables_to_parents(&mut self, merged: &[String], parent_of: &HashMap<String, String>) {
+        for word in merged {
+            let root = root_of(word, parent_of);
+            let children: Vec<(String, Vec<InflectionTable>)> = self
+                .entries
+                .get_mut(word)
+                .map(|es| es.iter_mut().map(|e| (e.pos.clone(), std::mem::take(&mut e.tables))).collect())
+                .unwrap_or_default();
+            let parent_entries = self.entries.get_mut(root).unwrap();
+            for (pos, mut tables) in children {
+                for table in &mut tables {
+                    table.word.get_or_insert_with(|| word.clone());
+                }
+                let target = parent_entries.iter().position(|e| e.pos == pos).unwrap_or(0);
+                merge_tables(&mut parent_entries[target].tables, tables);
+            }
         }
     }
 
@@ -1594,4 +1633,59 @@ fn polytonic_variants(form: &str) -> Vec<String> {
     }
     results.remove(form);
     results.into_iter().collect()
+}
+
+/// Words whose chain of form-of parents leads back to themselves.
+fn words_on_cycles(parent_of: &HashMap<String, String>) -> HashSet<String> {
+    parent_of
+        .keys()
+        .filter(|start| {
+            let mut current = parent_of.get(*start);
+            for _ in 0..parent_of.len() {
+                match current {
+                    None => return false,
+                    Some(word) if word == *start => return true,
+                    Some(word) => current = parent_of.get(word),
+                }
+            }
+            false
+        })
+        .cloned()
+        .collect()
+}
+
+/// The end of a word's chain of form-of parents, since a parent can itself have
+/// been merged (Γιωργάκης -> Γιώργος -> Γεώργιος). `parent_of` must have no
+/// cycles.
+fn root_of<'a>(word: &'a String, parent_of: &'a HashMap<String, String>) -> &'a String {
+    let mut root = word;
+    while let Some(parent) = parent_of.get(root) {
+        root = parent;
+    }
+    root
+}
+
+#[cfg(test)]
+mod form_of_tests {
+    use super::*;
+
+    fn links(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
+    #[test]
+    fn finds_mutual_and_self_links_but_not_words_leading_into_them() {
+        let parent_of = links(&[("α", "β"), ("β", "α"), ("γ", "γ"), ("δ", "α"), ("ε", "ζ")]);
+        let cyclic = words_on_cycles(&parent_of);
+        let mut found: Vec<&str> = cyclic.iter().map(String::as_str).collect();
+        found.sort();
+        assert_eq!(found, ["α", "β", "γ"]);
+    }
+
+    #[test]
+    fn root_follows_the_whole_chain() {
+        let parent_of = links(&[("Γιωργάκης", "Γιώργος"), ("Γιώργος", "Γεώργιος")]);
+        assert_eq!(root_of(&"Γιωργάκης".to_string(), &parent_of), "Γεώργιος");
+        assert_eq!(root_of(&"Γεώργιος".to_string(), &parent_of), "Γεώργιος");
+    }
 }

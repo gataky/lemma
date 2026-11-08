@@ -703,7 +703,6 @@ dependencies = [
  "regex",
  "reqwest",
  "rusqlite",
- "serde",
  "serde_json",
  "unicode-normalization",
 ]

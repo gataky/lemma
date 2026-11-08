@@ -8,7 +8,7 @@ Lemma used to build Kindle (MOBI/EPUB) and StarDict dictionaries. Those outputs 
 
 ### Prerequisites
 
-- Rust 1.80+ (edition 2024)
+- Rust 1.85+ (edition 2024)
 - The data in a `lemma-data` directory next to this repo:
   - `kaikki/en-el/kaikki.org-dictionary-Greek-words.jsonl` (Greek entries from English Wiktionary)
   - `kaikki/en/kaikki.org-dictionary-English.jsonl.gz` (English entries, for their translation tables)
@@ -23,7 +23,7 @@ make sqlite LEMMA_DATA=/path/to/lemma-data  # data somewhere else
 
 `make sqlite` stops if a data file is missing. Running `cargo run --release` directly also works without the data, but gives a smaller dictionary: fewer inflected forms, and an English index built from glosses alone.
 
-A `greek_data_en.jsonl` in the repo root takes priority over `lemma-data`. Delete it after downloading a newer dump.
+Without a local Greek dump, the build downloads it from kaikki.org to `greek_data_en.jsonl` and reuses that file on later runs. Delete it to download a fresh one.
 
 ### Command Line Arguments
 
@@ -69,12 +69,12 @@ The dictionary is built from:
 
 - **Primary Source**: [Kaikki.org](https://kaikki.org/) - Machine-readable Wiktionary data (definitions, POS, etymology)
 - **Inflection Data** (optional): [Dilemma](https://github.com/open-greek/dilemma) - Greek lemmatizer with 2.74M Modern Greek form-to-lemma mappings compiled from English and Greek Wiktionary, treebank corpora, and LSJ expansion
-- **Ranked Inflections** (optional): Dilemma's `mg_ranked_forms.json` from the [`open-greek/dilemma-data`](https://huggingface.co/datasets/open-greek/dilemma-data) HuggingFace dataset provides pre-ranked, case-deduplicated inflection lists per lemma. Downloaded automatically if `huggingface_hub` is installed.
+- **Ranked Inflections** (optional): Dilemma's `mg_ranked_forms.json` from the [`open-greek/dilemma-data`](https://huggingface.co/datasets/open-greek/dilemma-data) HuggingFace dataset provides pre-ranked, case-deduplicated inflection lists per lemma. Download it into `lemma-data/dilemma/`.
 - **Frequency Data** (fallback): [FrequencyWords](https://github.com/hermitdave/FrequencyWords) - Word frequency lists derived from OpenSubtitles 2018 corpus, used to rank inflections when pre-ranked forms are not available
 
 ### Optional Configuration
 
-To use local kaikki dumps or Dilemma inflection data, create a `.env` file in the project root:
+`make sqlite` points the build at `lemma-data`. To run `cargo run` directly with local kaikki dumps or Dilemma inflection data, set these in the environment or in a `.env` file in the project root:
 
 ```
 KAIKKI_LOCAL_DIR=/path/to/kaikki/dumps
@@ -85,16 +85,14 @@ When `DILEMMA_DATA_DIR` is set and `mg_lookup_scored.json` (or `mg_lookup.json`)
 
 #### Kaikki Extraction Date
 
-The downloader records the real Kaikki extraction date (the date Wiktionary was snapshotted, not the date you ran the build) and stores it as `extraction_date` in the database's `meta` table. The cascade is:
+The build records the Kaikki extraction date (the date Wiktionary was snapshotted, not the date you ran the build) as `extraction_date` in the database's `meta` table. It comes from:
 
-1. HTTP `Last-Modified` header on the Kaikki JSONL URL (direct download).
-2. The "extracted on YYYY-MM-DD" line on Kaikki's language index page (direct download, fallback).
-3. The file mtime of the local dump (when `KAIKKI_LOCAL_DIR` is used).
-4. The hardcoded constant for any committed fallback snapshot.
+1. For a local dump under `KAIKKI_LOCAL_DIR`: a `.meta` sidecar next to it if there is one, otherwise the file's modification date.
+2. For a download: the HTTP `Last-Modified` header, or failing that, the "extracted on YYYY-MM-DD" line on Kaikki's language index page.
 
 On a successful download the downloader writes a tiny `greek_data_<lang>.jsonl.meta` sidecar next to the dump containing `{"extraction_date": ..., "source_url": ..., "downloaded_at": ...}`. Subsequent builds that reuse the cached dump read the sidecar so the extraction date survives across runs. Sidecars are gitignored.
 
-The generator also automatically looks for `mg_ranked_forms.json` (pre-ranked inflections) in three locations: `data/` in this project, the `DILEMMA_DATA_DIR`, or the [`open-greek/dilemma-data`](https://huggingface.co/datasets/open-greek/dilemma-data) HuggingFace dataset (requires `pip install huggingface_hub`).
+The generator looks for `mg_ranked_forms.json` (pre-ranked inflections) in `data/` in this project, then in `DILEMMA_DATA_DIR`.
 
 #### Lemma Equivalences
 

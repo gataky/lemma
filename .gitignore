@@ -1,26 +1,23 @@
-# Lemma Greek Dictionary generated files
-
-# Generated dictionary directories
+# Build output: lemma_greek_<source>/lemma_greek_<source>.db
 lemma_greek_*/
 
-# Downloaded data files. Lemma redownloads from Kaikki on each run, so we
-# never need to track the dump in git. There is no committed fallback file.
+# Kaikki dumps downloaded into the repo when KAIKKI_LOCAL_DIR has none, and
+# their sidecar metadata. Never tracked in git.
 *.jsonl
-
-# Sidecar metadata written next to downloaded Kaikki dumps
 *.jsonl.meta
 
-# Processed entries cache files
-processed_entries_*.json
+# Other SQLite files
+*.sqlite
+*.sqlite-journal
 
-# Kindle Previewer log files
-*.log
-
-# macOS system files
-.DS_Store
+# Rust
+target/
 
 # Local config
 .env
+
+# macOS system files
+.DS_Store
 
 # Temporary files
 *.tmp
@@ -30,17 +27,3 @@ processed_entries_*.json
 # Claude Code local settings and agent worktrees
 .claude/settings.local.json
 .claude/worktrees/
-
-# Build outputs
-dist/
-iliad_polylas/
-
-# Rust
-target/
-.cargo/config.toml
-samples/
-test_dicts/
-
-# SQLite export (lemma-sqlite)
-*.sqlite
-*.sqlite-journal

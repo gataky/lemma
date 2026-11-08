@@ -1,4 +1,5 @@
-// Handles downloading dictionary data from Kaikki with cascading fallbacks.
+// Finds the kaikki dump of Greek Wiktionary: a local copy, a previous
+// download, or a fresh download from kaikki.org.
 
 use chrono::{DateTime, Utc};
 use regex::Regex;
@@ -22,19 +23,6 @@ const KAIKKI_INDEX_EL: &str = "https://kaikki.org/elwiktionary/Greek/";
 const LOCAL_KAIKKI_EN: &str = "en-el/kaikki.org-dictionary-Greek-words.jsonl";
 const LOCAL_KAIKKI_EL: &str = "el/kaikki.org-dictionary-Greek.jsonl";
 
-// The committed fallback JSONLs are snapshots from a fixed Wiktionary
-// extraction date. The filenames intentionally do NOT carry the date
-// (lemma's general rule: no dates in any names); the snapshot date lives
-// in the constants below so the copyright page can still display it.
-const LOCAL_FALLBACK_EN: &str = "greek_data_en.jsonl";
-const LOCAL_FALLBACK_EL: &str = "greek_data_el.jsonl";
-
-const LOCAL_FALLBACK_EXTRACTION_DATE_EN: &str = "2025-07-16";
-const LOCAL_FALLBACK_EXTRACTION_DATE_EL: &str = "2025-07-17";
-
-const GITHUB_EN: &str = "https://raw.githubusercontent.com/open-greek/lemma/main/greek_data_en.jsonl";
-const GITHUB_EL: &str = "https://raw.githubusercontent.com/open-greek/lemma/main/greek_data_el.jsonl";
-
 impl Downloader {
     pub fn new(source_lang: &str) -> Self {
         Self {
@@ -52,69 +40,35 @@ impl Downloader {
     fn local_kaikki_rel(&self) -> &'static str {
         if self.source_lang == "en" { LOCAL_KAIKKI_EN } else { LOCAL_KAIKKI_EL }
     }
-    fn local_fallback(&self) -> &'static str {
-        if self.source_lang == "en" { LOCAL_FALLBACK_EN } else { LOCAL_FALLBACK_EL }
-    }
-    fn local_fallback_extraction_date(&self) -> &'static str {
-        if self.source_lang == "en" {
-            LOCAL_FALLBACK_EXTRACTION_DATE_EN
-        } else {
-            LOCAL_FALLBACK_EXTRACTION_DATE_EL
-        }
-    }
-    fn github_url(&self) -> &'static str {
-        if self.source_lang == "en" { GITHUB_EN } else { GITHUB_EL }
-    }
 
-    /// Returns (success, filename). The downloader records the Wiktionary
-    /// extraction date as `self.extraction_date` for the caller to read.
+    /// Find the kaikki dump, in order: a local dump under `KAIKKI_LOCAL_DIR`
+    /// (read in place), a previous download in the working directory, then
+    /// kaikki.org. Returns (success, filename) and records the Wiktionary
+    /// extraction date in `self.extraction_date`.
     pub fn download(&mut self) -> (bool, Option<String>) {
-        let lang_desc = if self.source_lang == "en" { "English" } else { "Greek" };
-        println!("Downloading Greek data from {} Wiktionary via Kaikki...", lang_desc);
+        if let Some(local_path) = self.find_local_kaikki_file() {
+            println!("Using local kaikki dump: {}", local_path.display());
+            self.extraction_date = load_sidecar(local_path.to_str().unwrap_or(""))
+                .or_else(|| mtime_as_iso(&local_path));
+            if let Some(d) = &self.extraction_date {
+                println!("  Extraction date (local dump): {}", d);
+            }
+            return (true, Some(local_path.to_string_lossy().into_owned()));
+        }
 
         let target_filename = format!("greek_data_{}.jsonl", self.source_lang);
-
-        // Use existing file (cached from a previous run).
-        if Path::new(&target_filename).exists()
-            && fs::metadata(&target_filename).map(|m| m.len() > 0).unwrap_or(false)
-        {
+        if fs::metadata(&target_filename).map(|m| m.len() > 0).unwrap_or(false) {
             let line_count = count_lines(&target_filename);
-            println!("Using existing file: {} ({} lines)", target_filename, line_count);
+            println!("Using previous download: {} ({} lines)", target_filename, line_count);
             self.extraction_date = load_sidecar(&target_filename);
             if let Some(d) = &self.extraction_date {
                 println!("  Extraction date (from sidecar): {}", d);
-            } else if Path::new(&target_filename).exists()
-                && self.is_committed_fallback(&target_filename)
-            {
-                // Committed snapshot fallback: no sidecar, use the constant.
-                self.extraction_date = Some(self.local_fallback_extraction_date().to_string());
-                println!(
-                    "  Extraction date (committed fallback constant): {}",
-                    self.extraction_date.as_ref().unwrap()
-                );
             }
             return (true, Some(target_filename));
         }
 
-        // Try local kaikki dump
-        if let Some(local_path) = self.find_local_kaikki_file() {
-            println!("Using local kaikki dump: {}", local_path.display());
-            if fs::copy(&local_path, &target_filename).is_ok() {
-                let line_count = count_lines(&target_filename);
-                println!("Copied {} lines to {}", line_count, target_filename);
-                self.extraction_date = load_sidecar(local_path.to_str().unwrap_or(""))
-                    .or_else(|| mtime_as_iso(&local_path));
-                if let Some(d) = &self.extraction_date {
-                    println!("  Extraction date (local dump): {}", d);
-                    let abs = fs::canonicalize(&local_path).unwrap_or(local_path.clone());
-                    let url = format!("file://{}", abs.display());
-                    self.write_sidecar(&target_filename, &url);
-                }
-                return (true, Some(target_filename));
-            }
-        }
-
-        // Try primary URL
+        let lang_desc = if self.source_lang == "en" { "English" } else { "Greek" };
+        println!("Downloading Greek data from {} Wiktionary via Kaikki...", lang_desc);
         match self.download_from_url(self.primary_url(), &target_filename) {
             Ok(http_date) => {
                 self.extraction_date = http_date.or_else(|| self.scrape_index_page_date());
@@ -125,56 +79,18 @@ impl Downloader {
                 } else {
                     println!("  Warning: could not determine Kaikki extraction date");
                 }
-                return (true, Some(target_filename));
+                (true, Some(target_filename))
             }
             Err(e) => {
-                println!("Primary download failed: {}", e);
-            }
-        }
-
-        // Try local committed fallback (a fixed Wiktionary snapshot whose date
-        // lives in LOCAL_FALLBACK_EXTRACTION_DATE_*).
-        let local_fallback = self.local_fallback().to_string();
-        if Path::new(&local_fallback).exists() {
-            println!("Primary download failed. Using local fallback file: {}", local_fallback);
-            self.extraction_date = Some(self.local_fallback_extraction_date().to_string());
-            println!(
-                "  Extraction date (from fallback constant): {}",
-                self.extraction_date.as_ref().unwrap()
-            );
-            return (true, Some(local_fallback));
-        }
-
-        // GitHub fallback. The URL points at a stable filename on main; if the
-        // file is renamed or removed in the repo, this falls through to the
-        // final error case.
-        println!("Primary download failed and local fallback not found. Attempting GitHub fallback...");
-        let gh_url = self.github_url().to_string();
-        let fallback_filename = format!("greek_data_{}.jsonl", self.source_lang);
-
-        match self.download_from_url(&gh_url, &fallback_filename) {
-            Ok(_) => {
-                self.extraction_date = Some(self.local_fallback_extraction_date().to_string());
+                println!("Error: download failed: {}", e);
                 println!(
-                    "GitHub fallback download successful. Extraction date (constant): {}",
-                    self.extraction_date.as_ref().unwrap()
+                    "Download {} yourself and put it at $KAIKKI_LOCAL_DIR/{}",
+                    self.primary_url(),
+                    self.local_kaikki_rel()
                 );
-                self.write_sidecar(&fallback_filename, &gh_url);
-                (true, Some(fallback_filename))
-            }
-            Err(_) => {
-                println!("Error: All download attempts failed.");
-                println!("Try downloading manually from: {}", gh_url);
-                println!("Save as: {}", fallback_filename);
                 (false, None)
             }
         }
-    }
-
-    /// True if `path` looks like the committed fallback file (so we can
-    /// trust the LOCAL_FALLBACK_EXTRACTION_DATE_* constant for it).
-    fn is_committed_fallback(&self, path: &str) -> bool {
-        Path::new(path).file_name().and_then(|n| n.to_str()) == Some(self.local_fallback())
     }
 
     fn find_local_kaikki_file(&self) -> Option<PathBuf> {

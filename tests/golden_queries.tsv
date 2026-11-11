@@ -25,7 +25,11 @@
 είπα	λέω
 πήγα	πηγαίνω
 δρόμους	δρόμος
-παιδιά	παιδί
+# παιδιά is also a headword of its own ("childish play"), and frequency
+# can't tell the two apart.
+παιδιά	παιδί	2
+# A form with a meaning of its own stays a headword (shopping, not a fool).
+ψώνια	ψώνια
 γυναίκες	γυναίκα
 ήμουν	είμαι
 

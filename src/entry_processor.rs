@@ -66,7 +66,10 @@ pub struct Entry {
     /// Inflection tables with grammatical labels, for the SQLite export.
     pub tables: Vec<InflectionTable>,
     pub expanded_from_template: bool,
+    /// The words this entry is only an inflected form of. Empty when it has
+    /// a meaning of its own, so a non-empty list marks a form-of entry.
     pub form_of_targets: Vec<String>,
+    pub has_own_meaning: bool,
 }
 
 pub type EntryMap = indexmap_lite::IndexMap<String, Vec<Entry>>;
@@ -156,6 +159,7 @@ pub struct LineResult {
     pub head_expansion: Option<String>,
     pub expanded_from_template: bool,
     pub form_of_targets: Vec<String>,
+    pub has_own_meaning: bool,
 }
 
 fn empty_result(line_no: usize) -> LineResult {
@@ -173,6 +177,7 @@ fn empty_result(line_no: usize) -> LineResult {
         head_expansion: None,
         expanded_from_template: false,
         form_of_targets: Vec::new(),
+        has_own_meaning: false,
     }
 }
 
@@ -221,6 +226,7 @@ fn build_line_result(line_no: usize, raw_line: &str, source_lang: &str) -> Optio
     // Build the definitions + examples + form_of targets + etymology + inflections.
     let mut definitions: Vec<String> = Vec::new();
     let mut form_of_targets: Vec<String> = Vec::new();
+    let mut has_own_meaning_sense = false;
     let mut examples: Vec<Option<Example>> = Vec::new();
     let mut expanded_from_template = false;
 
@@ -237,6 +243,13 @@ fn build_line_result(line_no: usize, raw_line: &str, source_lang: &str) -> Optio
                     }
                 }
             }
+        }
+        // A word that is a form of another but also has a meaning of its own
+        // (ψώνια "shopping", also the plural of ψώνιο) is a headword in its own
+        // right, so it must not be folded into its parent.
+        has_own_meaning_sense = senses.iter().any(has_own_meaning);
+        if has_own_meaning_sense {
+            form_of_targets.clear();
         }
     }
 
@@ -298,6 +311,7 @@ fn build_line_result(line_no: usize, raw_line: &str, source_lang: &str) -> Optio
         head_expansion,
         expanded_from_template,
         form_of_targets,
+        has_own_meaning: has_own_meaning_sense,
     })
 }
 
@@ -535,9 +549,16 @@ impl<'a> EntryProcessor<'a> {
             if existing.head_expansion.is_none() && r.head_expansion.is_some() {
                 existing.head_expansion = r.head_expansion;
             }
-            for t in r.form_of_targets {
-                if !existing.form_of_targets.contains(&t) {
-                    existing.form_of_targets.push(t);
+            // A meaning of its own on either side keeps the merged entry a
+            // headword (καλό "good" beside "accusative of καλός").
+            existing.has_own_meaning |= r.has_own_meaning;
+            if existing.has_own_meaning {
+                existing.form_of_targets.clear();
+            } else {
+                for t in r.form_of_targets {
+                    if !existing.form_of_targets.contains(&t) {
+                        existing.form_of_targets.push(t);
+                    }
                 }
             }
         } else {
@@ -551,6 +572,7 @@ impl<'a> EntryProcessor<'a> {
                 tables: r.tables,
                 expanded_from_template: r.expanded_from_template,
                 form_of_targets: r.form_of_targets,
+                has_own_meaning: r.has_own_meaning,
             });
         }
     }
@@ -672,6 +694,34 @@ fn contains_non_greek_script(word: &str) -> bool {
 fn should_skip_pos(pos: &str) -> bool {
     let pos_lower: String = pos.chars().flat_map(|c| c.to_lowercase()).collect();
     SKIP_POS.iter().any(|s| pos_lower.contains(s))
+}
+
+/// Whether a sense means something itself, rather than pointing at another
+/// word. Wiktionary links most form-of senses with `form_of`, but some carry
+/// only the text ("active nonfinite form of λέω (léo)"), so a gloss that is
+/// "... of <Greek word>" counts as a pointer too. Only the last gloss is the
+/// sense's own; earlier ones belong to its parent sense.
+fn has_own_meaning(sense: &Value) -> bool {
+    if sense.get("form_of").is_some() || sense.get("alt_of").is_some() {
+        return false;
+    }
+    let tags = sense.get("tags").and_then(|v| v.as_array());
+    if tags.is_some_and(|ts| ts.iter().any(|t| matches!(t.as_str(), Some("form-of" | "alt-of")))) {
+        return false;
+    }
+    let gloss = sense
+        .get("glosses")
+        .and_then(|v| v.as_array())
+        .and_then(|gs| gs.last())
+        .and_then(|g| g.as_str())
+        .unwrap_or("")
+        .trim();
+    !gloss.is_empty() && !of_greek_word_re().is_match(gloss)
+}
+
+fn of_greek_word_re() -> &'static Regex {
+    static R: OnceLock<Regex> = OnceLock::new();
+    R.get_or_init(|| Regex::new(r"\bof\s+[Ͱ-Ͽἀ-῿]").unwrap())
 }
 
 fn extract_definition_from_sense(sense: &Value) -> String {
@@ -871,4 +921,54 @@ mod tests {
 
 fn is_cased(c: char) -> bool {
     c.is_alphabetic() && (c.is_lowercase() || c.is_uppercase())
+}
+
+#[cfg(test)]
+mod own_meaning_tests {
+    use super::{build_line_result, has_own_meaning};
+    use serde_json::json;
+
+    #[test]
+    fn linked_and_textual_form_of_senses_have_no_meaning_of_their_own() {
+        assert!(!has_own_meaning(&json!({
+            "glosses": ["nominative plural of ψώνιο (psónio)"],
+            "form_of": [{"word": "ψώνιο"}],
+        })));
+        assert!(!has_own_meaning(&json!({
+            "glosses": ["active nonfinite form of λέω (léo)"],
+        })));
+        assert!(!has_own_meaning(&json!({"glosses": ["x"], "tags": ["alt-of"]})));
+        assert!(!has_own_meaning(&json!({"tags": ["no-gloss"]})));
+    }
+
+    #[test]
+    fn only_the_last_gloss_is_the_senses_own() {
+        assert!(has_own_meaning(&json!({
+            "glosses": ["passive perfect participle of επανδρώνω (epandróno):", "manned"],
+        })));
+        assert!(has_own_meaning(&json!({"glosses": ["shopping (chiefly consumable items)"]})));
+    }
+
+    #[test]
+    fn a_form_with_a_meaning_of_its_own_is_not_a_form_of_entry() {
+        let line = json!({
+            "word": "ψώνια", "pos": "noun", "lang": "Greek", "lang_code": "el",
+            "senses": [
+                {"glosses": ["shopping (chiefly consumable items)"]},
+                {"glosses": ["nominative plural of ψώνιο (psónio)"],
+                 "form_of": [{"word": "ψώνιο"}], "tags": ["form-of"]},
+            ],
+        });
+        let r = build_line_result(0, &line.to_string(), "en").unwrap();
+        assert!(r.form_of_targets.is_empty());
+        assert_eq!(r.definitions.len(), 2);
+
+        let line = json!({
+            "word": "ψωνίων", "pos": "noun", "lang": "Greek", "lang_code": "el",
+            "senses": [{"glosses": ["genitive plural of ψώνιο (psónio)"],
+                        "form_of": [{"word": "ψώνιο"}], "tags": ["form-of"]}],
+        });
+        let r = build_line_result(0, &line.to_string(), "en").unwrap();
+        assert_eq!(r.form_of_targets, vec!["ψώνιο"]);
+    }
 }

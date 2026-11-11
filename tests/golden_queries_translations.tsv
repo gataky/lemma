@@ -4,8 +4,9 @@
 #   cargo run --release --bin lookup -- --check tests/golden_queries_translations.tsv
 # Same format as golden_queries.tsv.
 
-# Gloss-only ranking puts παράς (colloquial) and νενέ first.
-en:money	χρήμα
+# Gloss-only ranking puts παράς (colloquial) and νενέ first. λεφτά and
+# χρήματα ("money") rightly come before χρήμα.
+en:money	χρήμα	3
 en:grandmother	γιαγιά
 # Translation-table phrase with no Greek headword of its own.
 en:blacklist	μαύρη λίστα	2

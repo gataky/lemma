@@ -117,16 +117,87 @@ CREATE INDEX form_headword  ON form(headword_id);
 CREATE INDEX inflection_table_entry ON inflection_table(entry_id);
 ```
 
+```mermaid
+erDiagram
+    headword ||--o{ entry : "has parts of speech"
+    headword ||--|{ form : "spelled as"
+    entry ||--o{ sense : "has meanings"
+    entry ||--o{ inflection_table : "inflects as"
+    inflection_table ||--o{ inflection : "has cells"
+    inflection_tags ||--o{ inflection : labels
+    headword |o--o{ en_index : "translated by"
+    sense |o--o{ en_index : "matched from"
+    sense ||--|| sense_fts : "full-text indexed by"
+
+    meta {
+        text key PK
+        text value
+    }
+    headword {
+        integer id PK
+        text word
+        integer frequency
+    }
+    entry {
+        integer id PK
+        integer headword_id FK
+        integer ord
+        text pos
+        text pos_display
+        text head "nullable"
+        text etymology "nullable"
+    }
+    sense {
+        integer id PK
+        integer entry_id FK
+        integer ord
+        text gloss
+        text example "nullable"
+        text example_translation "nullable"
+        integer is_reference
+    }
+    form {
+        text norm PK
+        integer headword_id PK, FK
+        text form
+        text phonetic
+        integer is_primary
+    }
+    inflection_table {
+        integer id PK
+        integer entry_id FK
+        integer ord
+        text kind
+        text word "nullable"
+        text label "nullable"
+        text template "nullable"
+        text note "nullable"
+    }
+    inflection_tags {
+        integer id PK
+        text tags UK
+    }
+    inflection {
+        integer table_id PK, FK
+        integer ord PK
+        text form
+        integer tags_id FK
+    }
+    en_index {
+        text term PK
+        text greek PK
+        integer headword_id FK "nullable"
+        integer score
+        integer sense_id FK "nullable"
+        text note "nullable"
+    }
+    sense_fts {
+        integer rowid PK, FK "= sense.id"
+        text gloss
+    }
 ```
-headword 1──* entry 1──* sense
-    │            │         ▲
-    1            1         │ (optional)
-    *            *         │
-   form  inflection_table  en_index   en_index.headword_id → headword (nullable)
-                 1
-                 *
-            inflection *──1 inflection_tags
-```
+
+`meta` stands alone. `sense_fts` is an FTS5 external-content index over `sense.gloss`, and the `inflection_row` view joins `inflection_table`, `inflection` and `inflection_tags`.
 
 ### `meta`
 
